@@ -80,17 +80,18 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 ### Part 5: Software & Display Setup
 
 20. Install required tools:
-    - **VNC** (e.g., TightVNC):  
-      `winget install GlavSoft.TightVNC`
+    - **Remote Desktop Software** (e.g., VNC like TightVNC):  
+      `winget install GlavSoft.TightVNC`  
+      > You can use any remote desktop solution that does not rely on Hyper-V's built-in RDP. VNC is a lightweight and commonly used option.
     - **VB Cable**:  
       https://vb-audio.com/Cable/
     - **Virtual Display Driver**:  
       https://github.com/itsmikethetech/Virtual-Display-Driver
 
-21. Configure VNC → Reboot VM → **Close Hyper-V window**.  
-    > ❗ **Never use Hyper-V RDP to connect again. Use VNC only.**
+21. Configure your remote desktop software of choice → Reboot the VM → **Close the Hyper-V window**.  
+    > ❗ **Never use Hyper-V's built-in RDP to connect again. Always use your chosen remote desktop tool (e.g., VNC).**
 
-22. Using VNC, open **Device Manager** → **Disable Hyper-V Display Adapter**.
+22. Using your remote desktop connection, open **Device Manager** → **Disable the Hyper-V Display Adapter**.
 23. Disable **BitLocker** in Windows settings.
 24. Shutdown the VM.
 
