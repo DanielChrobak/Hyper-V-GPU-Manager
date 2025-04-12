@@ -164,7 +164,7 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 
 ### Part 8: Final Setup
 
-33. **Start the VM** → Connect via **VNC**.
+33. **Start the VM** → Connect via your **Remote Desktop** software.
 34. Install the **Virtual Display Driver**.
 35. In **Display Settings**:
     - Set resolution as desired.
