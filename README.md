@@ -1,6 +1,6 @@
 # Quick Guide: Hyper-V Gaming VM with GPU Paravirtualization (Partitioning a GPU)
 
-This guide walks you through creating a Hyper-V VM optimized for gaming by using GPU partitioning. It's designed for **Nvidia GPUs** on the host system.
+This guide walks you through creating a Hyper-V VM optimized for gaming by using GPU partitioning. It's written for **Nvidia GPUs** on the host system.
 
 > ⚠️ It *is* possible to use AMD GPUs, but the driver files in Steps **33–36** will differ, and those are not covered here.
 
