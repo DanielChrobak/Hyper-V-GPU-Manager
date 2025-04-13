@@ -1,6 +1,6 @@
 # Quick Guide: Hyper-V Gaming VM with GPU Paravirtualization (Partitioning a GPU)
 
-This guide walks you through creating a Hyper-V VM optimized for gaming by using GPU partitioning. It's primarily designed for **Nvidia GPUs** on the host system.
+This guide walks you through creating a Hyper-V VM optimized for gaming by using GPU partitioning. It's designed for **Nvidia GPUs** on the host system.
 
 > ⚠️ It *is* possible to use AMD GPUs, but the driver files in Steps **33–36** will differ, and those are not covered here.
 
@@ -32,10 +32,7 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 4. Open **Hyper-V Manager**.
 5. Right-click your host (left pane) → **Hyper-V Settings**:
    - Disable **Enhanced Session Mode Policy** and **Enhanced Session Mode**.
-6. Right-click host → **Virtual Switch Manager**:
-   - Create **External Switch**.
-   - Assign it to your host network adapter (acts like a physical machine).
-
+     
 ---
 
 ### Part 2: Create the Virtual Machine
