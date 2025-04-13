@@ -44,7 +44,7 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 11. Choose the external switch you created (or leave disconnected for Win11 install).
 12. Create a **VHD**:
     - Name it, set location, and size (~256GB).
-    - VHD is dynamically expanding — it uses only needed space.
+    - VHD is dynamically expanding — it uses only needed space on the host.
 13. Choose to install OS from **image**, point to your Windows ISO.
 14. Click **Finish** but **do NOT start the VM yet**.
 
@@ -65,7 +65,7 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 
 ### Part 4: OS Installation
 
-17. Connect to VM and **start it**. Be quick to boot from ISO.
+17. Connect to VM and **start it**. Be quick to boot from ISO, you have a very short amount of time to press a key to boot into the ISO.
 18. Install Windows:
     - For Windows 11: Use `Shift+F10 > OOBE\BYPASSNRO` to skip MS account.
     - Post-install, connect to the network and update Windows.
@@ -76,14 +76,16 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 
 ### Part 5: Software & Display Setup
 
-20. Install required tools:
+20. Download required tools:
     - **Remote Desktop Software** (e.g., VNC like TightVNC):  
       `winget install GlavSoft.TightVNC`  
       > You can use any remote desktop solution that does not rely on Hyper-V's built-in RDP. VNC is a lightweight and commonly used option.
     - **VB Cable**:  
       https://vb-audio.com/Cable/
+      > You will need this for sound.
     - **Virtual Display Driver**:  
       https://github.com/itsmikethetech/Virtual-Display-Driver
+      > Do not install this yet, only download for now.
 
 21. Configure your remote desktop software of choice → Reboot the VM → **Close the Hyper-V window**.  
     > ❗ **Never use Hyper-V's built-in RDP to connect again. Always use your chosen remote desktop tool (e.g., VNC).**
@@ -118,8 +120,9 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
     Set-ExecutionPolicy unrestricted
     ```
     Confirm with **Y**.
+    > Add security implications here (todo)
 
-31. In the white script area (click dropdown if hidden), paste:
+32. In the white script area (click dropdown if hidden), paste:
 
     > ⚠️ Replace `"Your VM Name"` with your VM's actual name (case-sensitive)
 
@@ -131,22 +134,22 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
     # VRAM
     Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionVRAM 1
     Set-VMGpuPartitionAdapter -VMName $vm -MaxPartitionVRAM 500000000
-    Set-VMGpuPartitionAdapter -VMName $vm -OptimalPartitionVRAM 500000000
+    Set-VMGpuPartitionAdapter -VMName $vm -OptimalPartitionVRAM 499999999
 
     # Encode
     Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionEncode 1
     Set-VMGpuPartitionAdapter -VMName $vm -MaxPartitionEncode 500000000
-    Set-VMGpuPartitionAdapter -VMName $vm -OptimalPartitionEncode 500000000
+    Set-VMGpuPartitionAdapter -VMName $vm -OptimalPartitionEncode 499999999
 
     # Decode
     Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionDecode 1
     Set-VMGpuPartitionAdapter -VMName $vm -MaxPartitionDecode 500000000
-    Set-VMGpuPartitionAdapter -VMName $vm -OptimalPartitionDecode 500000000
+    Set-VMGpuPartitionAdapter -VMName $vm -OptimalPartitionDecode 499999999
 
     # Compute
     Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionCompute 1
     Set-VMGpuPartitionAdapter -VMName $vm -MaxPartitionCompute 500000000
-    Set-VMGpuPartitionAdapter -VMName $vm -OptimalPartitionCompute 500000000
+    Set-VMGpuPartitionAdapter -VMName $vm -OptimalPartitionCompute 499999999
 
     # Additional settings
     Set-VM -GuestControlledCacheTypes $true -VMName $vm
@@ -154,8 +157,8 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
     Set-VM -HighMemoryMappedIoSpace 32GB -VMName $vm
     ```
 
-32. Click the green **Run Script** button.  
-    > 🟡 If you get an error about GPU partition — ignore it, it's normal the first time.
+33. Click the green **Run Script** button.  
+    > 🟡 The errors when running for the first time in regards to no GPU partition being present can be ignored as there will be no partition by default until you run this.
 
 ---
 
@@ -177,7 +180,7 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 
 38. In Sunshine GUI:
     - **Disable** Steam Audio Driver.
-    - Manually select **VB-Cable** by ID.
+    - Set sunshine audio sink to use the ID of the **VBcable** noted.
     - Choose the correct **video device**.
 
 39. Disable **Advanced Display Device Options** in Sunshine's Audio/Video settings.
@@ -187,6 +190,3 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 
 ---
 
-## 📝 Notes
-
-- Every time you **update GPU drivers on the host**, you must **repeat steps 33–36** (delete old NV files and recopy them to the VM).
