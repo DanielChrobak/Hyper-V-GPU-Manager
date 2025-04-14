@@ -41,7 +41,7 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 8. Name your VM & choose config file location (creates subdirectories).
 9. Choose **Generation 2**.
 10. Assign RAM (disable Dynamic Memory).
-11. Choose the external switch you created (or leave disconnected for Win11 install).
+11. Set the Virtual Switch to disconnected.
 12. Create a **VHD**:
     - Name it, set location, and size (~256GB).
     - VHD is dynamically expanding — it uses only needed space on the host.
@@ -76,7 +76,15 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 
 ### Part 5: Software & Display Setup
 
-20. Download required tools:
+20.1 Internet
+   - In **Hyper-V Manager** click **Virtual Switch Manager**
+   - Select **New virtual network switch** and make sure **External** is highlighted, then click **Create Virtual Switch**
+   - Name it **External Switch** and make sure the **Connection Type** is set to **External network**, below that choose the **Network Interface** from which you get your internet connection.
+   - Click **Apply** and then if you get a pop up select **Yes**.
+   - Now go back to the **Hyper-V Manager** and make sure your VM is highlited, under the **Actions** tab click **Settings** and select the **Network Adapter**.
+   - Under **Virtual Switch** configure it so the previously made **External Switch** is selected and click **Apply**.
+
+20.2. Download required tools:
     - **Remote Desktop Software** (e.g., VNC like TightVNC):  
       `winget install GlavSoft.TightVNC`  
       > You can use any remote desktop solution that does not rely on Hyper-V's built-in RDP. VNC is a lightweight and commonly used option.
