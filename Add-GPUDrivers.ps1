@@ -117,5 +117,5 @@ try {
     }
 }
 
-Log "GPU driver injection completed. Start VM and install drivers."
+Log "GPU driver injection completed."
 Read-Host "Press Enter to exit"
