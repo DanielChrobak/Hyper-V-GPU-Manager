@@ -1,9 +1,4 @@
 # Add-GPUDrivers.ps1
-param (
-    [Parameter(Mandatory=$true)]
-    [string]$VMName
-)
-
 function Log {
     param ([string]$M, [string]$T = "INFO")
     Write-Host "[$T] $M"
@@ -12,16 +7,23 @@ function Log {
 # Check admin rights
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")) {
     Log "Requesting admin rights..." "WARN"
-    Start-Process powershell.exe "-ExecutionPolicy Bypass -File `"$PSCommandPath`" -VMName `"$VMName`"" -Verb RunAs
+    Start-Process powershell.exe "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
+
+# Get VM name from user input
+$vmName = Read-Host "Enter the name of the VM"
+if ([string]::IsNullOrWhiteSpace($vmName)) {
+    Log "No VM name provided. Exiting." "ERROR"
     exit
 }
 
 # Get VM disk
 try {
-    Log "Getting $VMName disk info..."
-    $vmDisk = Get-VMHardDiskDrive -VMName $VMName
+    Log "Getting $vmName disk info..."
+    $vmDisk = Get-VMHardDiskDrive -VMName $vmName
     if (!$vmDisk) {
-        Log "No disk found for $VMName" "ERROR"
+        Log "No disk found for $vmName" "ERROR"
         exit
     }
     Log "VM disk path: $($vmDisk.Path)"
@@ -32,11 +34,11 @@ try {
 
 # Check VM state
 try {
-    $vmState = (Get-VM -Name $VMName).State
+    $vmState = (Get-VM -Name $vmName).State
     while ($vmState -ne "Off") {
         Log "VM is $vmState. Please shut it off." "WARN"
         Read-Host "Press Enter when VM is off"
-        $vmState = (Get-VM -Name $VMName).State
+        $vmState = (Get-VM -Name $vmName).State
     }
     Log "VM is off. Proceeding."
 } catch {
@@ -115,5 +117,5 @@ try {
     }
 }
 
-Log "GPU driver injection completed for $VMName. Start VM and install drivers."
+Log "GPU driver injection completed. Start VM and install drivers."
 Read-Host "Press Enter to exit"
