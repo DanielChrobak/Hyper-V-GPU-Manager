@@ -47,7 +47,7 @@ $defaultPath = "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
 if ((Read-Host "Use test values? (Y/N)") -match "^[Yy]$") {
     $vmName = "TestVM"; $ramGB = 8; $cpuCount = 4; $storageGB = 128
     $userPath = "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
-    $isoPath = "C:\Users\Daniel\Downloads\Win11_24H2_English_x64.iso"
+    $isoPath = Read-Host "ISO path"
     Log "Using test values: VM=$vmName, RAM=${ramGB}GB, CPU=$cpuCount, Storage=${storageGB}GB"
 } else {
     $vmName = Read-Host "VM name"
