@@ -200,3 +200,23 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
 
 ---
 
+# Automation (Scripts)
+
+## Create-VM.ps1
+
+This script will automagically create a VM based on your input.
+![image](https://github.com/user-attachments/assets/4e75664a-2d29-4bba-ae77-e7ae58eecd08)
+
+## Add-GPUDrivers.ps1
+
+This script will automagically move your NVIDIA drivers over to the VM from the Host.
+![image](https://github.com/user-attachments/assets/26b79500-c465-4391-a602-56d37086be43)
+
+## Create-GPUPartition.ps1
+
+This script will automagically create a GPU Partition for your VM based on your input.
+![image](https://github.com/user-attachments/assets/33f6b78f-d725-41be-b619-efac90344ec3)
+
+
+
+
