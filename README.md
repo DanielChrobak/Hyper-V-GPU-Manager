@@ -87,15 +87,15 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
    - Click **Apply** to save changes
 
 20.2. Download required tools:
-    - **Remote Desktop Software** (e.g., VNC like TightVNC):  
-      `winget install GlavSoft.TightVNC`  
-      > You can use any remote desktop solution that does not rely on Hyper-V's built-in RDP. VNC is a lightweight and commonly used option.
-    - **VB Cable**:  
-      https://vb-audio.com/Cable/
-      > You will need this for sound.
-    - **Virtual Display Driver**:  
-      https://github.com/itsmikethetech/Virtual-Display-Driver
-      > Do not install this yet, only download for now.
+- Remote Desktop Software (e.g., VNC like TightVNC):  
+  `winget install GlavSoft.TightVNC`  
+  > You can use any remote desktop solution that does not rely on Hyper-V's built-in RDP. VNC is a lightweight and commonly used option.
+- VB Cable:  
+  https://vb-audio.com/Cable/  
+  > You will need this for sound.
+- Virtual Display Driver:  
+  https://github.com/itsmikethetech/Virtual-Display-Driver  
+  > Do not install this yet, only download for now
 
 21. Configure your remote desktop software of choice → Reboot the VM → **Close the Hyper-V window**.  
     > ❗ **Never use Hyper-V's built-in RDP to connect again. Always use your chosen remote desktop tool (e.g., VNC).**
