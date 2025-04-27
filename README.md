@@ -90,7 +90,6 @@ Allow a VM access to approximately **50% of the GPU's performance**. You can cus
     - **Remote Desktop Software** (e.g., VNC like TightVNC):  
       `winget install GlavSoft.TightVNC`  
       > You can use any remote desktop solution that does not rely on Hyper-V's built-in RDP. VNC is a lightweight and commonly used option.
-      
     - **VB Cable**:  
       https://vb-audio.com/Cable/
       > You will need this for sound.
