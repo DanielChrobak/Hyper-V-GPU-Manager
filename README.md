@@ -7,6 +7,7 @@ A streamlined PowerShell tool for creating and managing Hyper-V virtual machines
 - **🚀 Automated VM Creation**: Complete VM setup with optimized configurations
 - **🎯 GPU Partitioning**: Configurable GPU resource allocation (1-100% per VM)
 - **💾 Driver Injection**: Direct NVIDIA driver installation into VM disk images
+- **🔄 Driver Updates**: Keep VM and host GPU drivers synchronized 
 - **🖥️ Simple Terminal UI**: Clean menu system with color-coded logging
 - **⚙️ Complete VM Lifecycle**: Create, configure, and manage VMs from one tool
 - **🔧 Flexible Configuration**: Test mode or custom settings for different needs
@@ -41,13 +42,14 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 ### 2. Menu Options Overview
 
-The script presents 5 main options:
+The script presents 6 main options:
 
 1. **Create New VM** - Basic VM creation without GPU features
 2. **Create GPU Partition** - Add GPU partitioning to existing VM
 3. **Add GPU Drivers to VM** - Inject NVIDIA drivers into VM disk
 4. **Complete GPU Setup** - Full automated setup (VM + GPU + ready for drivers)
 5. **Exit** - Close the application
+6. **Update GPU Drivers in VM** - Synchronize VM drivers with host (overwrite)
 
 ## 📋 Detailed Workflow
 
@@ -76,6 +78,13 @@ The script presents 5 main options:
 - Combines Options 1 and 2 automatically
 - Creates VM with immediate GPU partition setup
 - **Note**: You must install the OS first, then use Option 3 for drivers
+
+### Option 6: Update GPU Drivers in VM
+- **Best Practice**: Keep VM drivers synchronized with host
+- Overwrites existing VM drivers with current host versions
+- Confirmation prompt before proceeding
+- Same reliable process as initial driver injection
+- Essential after host GPU driver updates
 
 ## ⚙️ Configuration Details
 
@@ -117,9 +126,11 @@ The script provides detailed logging with timestamps and color coding:
 - **WARN** (Yellow): Warnings and non-critical issues
 - **ERROR** (Red): Errors requiring attention
 
-Example log entry:
+Example log entries:
 ```
 [2025-08-06 03:15:42][SUCCESS] VM 'TestVM' created successfully - RAM: 8GB, CPU: 4, TPM: True, ISO: True
+[2025-08-06 03:20:15][WARN] This will overwrite existing GPU drivers with the latest version from the host
+[2025-08-06 03:21:03][SUCCESS] GPU drivers updated successfully - VM drivers now match host version
 ```
 
 ## 🛠️ Post-Creation Setup
@@ -132,10 +143,16 @@ Example log entry:
 5. **Configure audio** (VB-Cable or similar)
 6. **Setup display driver** for headless operation
 
+### Driver Maintenance:
+7. **Monitor host driver updates** - Check NVIDIA GeForce Experience or manual updates
+8. **Update VM drivers** - Use Option 6 after any host GPU driver updates
+9. **Verify compatibility** - Ensure both host and VM are running same driver version
+
 ### Important Notes:
 - ⚠️ **Always install the OS before injecting drivers**
 - ✅ **VM must be powered off for GPU partition and driver operations**
 - 🔄 **Use remote desktop solutions instead of Hyper-V console for gaming**
+- 🔄 **Keep drivers synchronized between host and VM for optimal performance**
 
 ## 🧪 Troubleshooting
 
@@ -153,10 +170,16 @@ Example log entry:
 - Ensure VM is Generation 2
 - Check that VM is powered off
 
-**Driver Injection Fails:**
+**Driver Injection/Update Fails:**
 - Run PowerShell as Administrator
 - Ensure VM hard disk is accessible
 - Verify NVIDIA drivers exist in `C:\Windows\System32\DriverStore\FileRepository`
+- Check that VM is completely powered off
+
+**Performance Issues After Driver Update:**
+- Restart both host and VM after driver updates
+- Verify GPU partition allocation hasn't changed
+- Check Windows Device Manager for driver conflicts
 
 **Permission Issues:**
 - Script auto-elevates, but manual elevation may be needed:
@@ -165,6 +188,14 @@ Start-Process powershell.exe -Verb RunAs
 ```
 
 ## 🔧 Advanced Usage
+
+### Driver Update Strategy
+**Recommended Workflow:**
+1. Update NVIDIA drivers on host system first
+2. Test host system stability and performance
+3. Power off gaming VMs completely
+4. Run script and choose Option 6 for each VM
+5. Start VMs and verify GPU functionality
 
 ### Custom VM Paths
 The script prompts for VHD location with smart defaults:
@@ -189,6 +220,7 @@ C:\Windows\System32\DriverStore\FileRepository\nv_dispi.inf_amd64*
 - **Secure Boot**: Enabled on Generation 2 VMs
 - **UEFI**: Full support for modern operating systems
 - **Legacy BIOS**: Not supported (Generation 2 only)
+- **Driver Integrity**: Maintains driver signing and integrity during updates
 
 ## 📈 Performance Expectations
 
@@ -197,6 +229,7 @@ With proper configuration:
 - **GPU Performance**: Scales with partition percentage
 - **Gaming**: Suitable for most modern titles
 - **Overhead**: Minimal with static memory allocation
+- **Driver Sync**: Essential for maintaining optimal GPU performance
 
 ## 🔄 Workflow Summary
 
@@ -212,6 +245,13 @@ With proper configuration:
 9. Configure audio and display drivers
 10. Ready for gaming!
 
+**Driver Maintenance Process:**
+1. Update host NVIDIA drivers
+2. Power off all gaming VMs
+3. Run script and choose Option 6 for each VM
+4. Confirm driver update when prompted
+5. Start VMs and verify functionality
+
 ## 🎯 Best Practices
 
 - **Always backup** important VMs before making changes
@@ -219,6 +259,18 @@ With proper configuration:
 - **Use static memory allocation** for gaming VMs  
 - **Disable unnecessary integration services** for performance
 - **Keep host NVIDIA drivers updated**
+- **Synchronize VM drivers immediately after host updates**
 - **Monitor system resources** during VM operation
+- **Use confirmation prompts** - Don't skip the safety checks
 
-*Efficient VM Management Made Simple! 🎮*
+## 🆕 Driver Update Features
+
+The new driver update system provides:
+- **Automatic Detection**: Finds latest NVIDIA drivers from host
+- **Safe Overwriting**: Uses `-Force` parameter for reliable file replacement
+- **User Confirmation**: Prevents accidental driver updates
+- **Progress Logging**: Clear feedback during the update process
+- **Error Handling**: Robust cleanup and error recovery
+- **Version Synchronization**: Ensures host-VM driver compatibility
+
+*Efficient VM Management with Synchronized Performance! 🎮*
