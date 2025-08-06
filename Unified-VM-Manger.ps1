@@ -8,14 +8,15 @@ function Log {
 function Show-Menu {
     Clear-Host
     Write-Host "===============================================" -ForegroundColor Cyan
-    Write-Host "         UNIFIED VM MANAGER v2.0              " -ForegroundColor Cyan
+    Write-Host " UNIFIED VM MANAGER v2.0 " -ForegroundColor Cyan
     Write-Host "===============================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "1. Create New VM" -ForegroundColor Green
     Write-Host "2. Create GPU Partition" -ForegroundColor Yellow
     Write-Host "3. Add GPU Drivers to VM" -ForegroundColor Magenta
     Write-Host "4. Complete GPU Setup (Create VM + GPU Partition + Drivers)" -ForegroundColor Red
-    Write-Host "5. Exit" -ForegroundColor Gray
+    Write-Host "5. Update GPU Drivers in VM (overwrite)" -ForegroundColor Cyan
+    Write-Host "6. Exit" -ForegroundColor Gray
     Write-Host ""
     Write-Host "===============================================" -ForegroundColor Cyan
 }
@@ -25,17 +26,15 @@ function Setup-VMTPM {
     try {
         Log "Setting up TPM for $VMName"
         $vm = Get-VM -Name $VMName -ErrorAction SilentlyContinue
-        if (!$vm -or $vm.Generation -ne 2) { 
+        if (!$vm -or $vm.Generation -ne 2) {
             Log "VM not found or not Generation 2" "ERROR"
-            return $false 
+            return $false
         }
-
         if ($vm.State -ne "Off") {
             Log "Shutting down VM for TPM setup..."
             Stop-VM -Name $VMName -Force
             do { Start-Sleep 2 } while ((Get-VM -Name $VMName).State -ne "Off")
         }
-
         Set-VMKeyProtector -VMName $VMName -NewLocalKeyProtector
         Enable-VMTPM -VMName $VMName
         return (Get-VMSecurity -VMName $VMName).TmpEnabled
@@ -50,30 +49,26 @@ function Get-VMConfig {
         return @{
             Name = "TestVM"
             RAM = 8
-            CPU = 4 
+            CPU = 4
             Storage = 128
             Path = "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
             ISO = (Read-Host "ISO path")
         }
     }
-    
     $config = @{}
     $config.Name = Read-Host "VM name"
     do { $config.RAM = [int](Read-Host "RAM (GB, min 2)") } while ($config.RAM -lt 2)
-    do { $config.CPU = [int](Read-Host "CPU cores (min 1)") } while ($config.CPU -lt 1) 
+    do { $config.CPU = [int](Read-Host "CPU cores (min 1)") } while ($config.CPU -lt 1)
     do { $config.Storage = [int](Read-Host "Storage (GB, min 20)") } while ($config.Storage -lt 20)
-    
     $defaultPath = "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
     $userPath = Read-Host "VHD location (default: $defaultPath)"
     $config.Path = if ($userPath) { $userPath } else { $defaultPath }
     $config.ISO = Read-Host "ISO path"
-    
     return $config
 }
 
 function Create-VM {
     Log "=== VM CREATION MODULE ===" "INFO"
-    
     $config = Get-VMConfig
     $vhdPath = "$($config.Path)$($config.Name).vhdx"
     
@@ -82,20 +77,17 @@ function Create-VM {
         Log "VM '$($config.Name)' already exists" "ERROR"
         return $null
     }
-    
     if (Test-Path $vhdPath) {
         if ((Read-Host "VHDX exists. Delete? (Y/N)") -match "^[Yy]$") {
             Remove-Item $vhdPath -Force
         } else { return $null }
     }
-    
     if (!(Test-Path $config.Path)) { New-Item -ItemType Directory -Path $config.Path -Force | Out-Null }
-
+    
     try {
         # Create VM with all settings
         $ramBytes = [int64]$config.RAM * 1GB
         $storageBytes = [int64]$config.Storage * 1GB
-        
         Log "Creating VM: $($config.Name)"
         New-VM -Name $config.Name -MemoryStartupBytes $ramBytes -Generation 2 -NewVHDPath $vhdPath -NewVHDSizeBytes $storageBytes | Out-Null
         
@@ -115,7 +107,6 @@ function Create-VM {
             Add-VMDvdDrive -VMName $config.Name -Path $config.ISO
             $isoAttached = $true
         }
-        
         Log "VM '$($config.Name)' created successfully - RAM: $($config.RAM)GB, CPU: $($config.CPU), TPM: $tmpEnabled, ISO: $isoAttached" "SUCCESS"
         return $config.Name
     } catch {
@@ -126,26 +117,24 @@ function Create-VM {
 
 function Create-GPUPartition {
     param([string]$InputVMName = $null)
-    
     Log "=== GPU PARTITION MODULE ===" "INFO"
     
     # Ensure we have a clean string for the VM name
-    $vmName = if ($InputVMName) { 
+    $vmName = if ($InputVMName) {
         # Convert any object to string and extract just the name
         $InputVMName.ToString()
-    } else { 
-        Read-Host "Enter VM name" 
+    } else {
+        Read-Host "Enter VM name"
     }
     
-    if ([string]::IsNullOrWhiteSpace($vmName)) { 
+    if ([string]::IsNullOrWhiteSpace($vmName)) {
         Log "No VM name provided" "ERROR"
-        return $false 
+        return $false
     }
-    
     $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
     if (!$vm) { Log "VM '$vmName' not found" "ERROR"; return $false }
     
-    do { 
+    do {
         $percentage = [int](Read-Host "Enter GPU percentage (1-100)")
     } while ($percentage -lt 1 -or $percentage -gt 100)
     
@@ -156,11 +145,10 @@ function Create-GPUPartition {
             do { Start-Sleep 2 } while ((Get-VM -Name $vmName).State -ne "Off")
         } else { return $false }
     }
-
+    
     try {
         # Remove existing adapter
         Get-VMGpuPartitionAdapter -VMName $vmName -ErrorAction SilentlyContinue | Remove-VMGpuPartitionAdapter
-        
         # Add new adapter
         Add-VMGpuPartitionAdapter -VMName $vmName
         
@@ -178,7 +166,6 @@ function Create-GPUPartition {
         
         # Additional VM settings
         Set-VM -VMName $vmName -GuestControlledCacheTypes $true -LowMemoryMappedIoSpace 1GB -HighMemoryMappedIoSpace 32GB
-        
         Log "GPU partition configured for '$vmName' with $percentage% allocation" "SUCCESS"
         return $true
     } catch {
@@ -189,7 +176,6 @@ function Create-GPUPartition {
 
 function Wait-ForPartitions {
     param([int]$DiskNumber, [int]$MaxRetries = 5)
-    
     for ($i = 0; $i -lt $MaxRetries; $i++) {
         try {
             Update-Disk -Number $DiskNumber -ErrorAction SilentlyContinue
@@ -204,21 +190,19 @@ function Wait-ForPartitions {
 
 function Add-GPUDrivers {
     param([string]$InputVMName = $null)
-    
     Log "=== GPU DRIVER INJECTION MODULE ===" "INFO"
     
     # Ensure we have a clean string for the VM name
-    $vmName = if ($InputVMName) { 
+    $vmName = if ($InputVMName) {
         $InputVMName.ToString()
-    } else { 
-        Read-Host "Enter the name of the VM" 
+    } else {
+        Read-Host "Enter the name of the VM"
     }
     
-    if ([string]::IsNullOrWhiteSpace($vmName)) { 
+    if ([string]::IsNullOrWhiteSpace($vmName)) {
         Log "No VM name provided" "ERROR"
-        return $false 
+        return $false
     }
-    
     $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
     if (!$vm) { Log "VM '$vmName' not found" "ERROR"; return $false }
     
@@ -249,9 +233,8 @@ function Add-GPUDrivers {
         }
         
         # Find largest suitable partition
-        $largestPartition = $partitions | Where-Object { $_.Type -eq "Basic" -or $_.Size -gt 1GB } | 
-                          Sort-Object Size -Descending | Select-Object -First 1
-        
+        $largestPartition = $partitions | Where-Object { $_.Type -eq "Basic" -or $_.Size -gt 1GB } |
+            Sort-Object Size -Descending | Select-Object -First 1
         if (!$largestPartition) { Log "No suitable partition found" "ERROR"; return $false }
         
         # Create mount point and map partition
@@ -266,9 +249,8 @@ function Add-GPUDrivers {
         }
         
         # Find and copy NVIDIA drivers
-        $nvDriverRepo = Get-ChildItem "C:\Windows\System32\DriverStore\FileRepository" -Directory | 
-                       Where-Object { $_.Name -like "nv_dispi.inf_amd64*" } | Select-Object -First 1
-        
+        $nvDriverRepo = Get-ChildItem "C:\Windows\System32\DriverStore\FileRepository" -Directory |
+            Where-Object { $_.Name -like "nv_dispi.inf_amd64*" } | Select-Object -First 1
         if (!$nvDriverRepo) { Log "NVIDIA drivers not found on host" "ERROR"; return $false }
         
         # Copy driver repository
@@ -280,17 +262,14 @@ function Add-GPUDrivers {
         $nvFiles = Get-ChildItem "C:\Windows\System32" -File | Where-Object { $_.Name -like "nv*" }
         $destSystem32 = "$mountPoint\Windows\System32"
         $copiedCount = 0
-        
         foreach ($file in $nvFiles) {
-            try { 
+            try {
                 Copy-Item -Path $file.FullName -Destination $destSystem32 -Force
                 $copiedCount++
             } catch { }
         }
-        
         Log "Driver injection completed - Repository: $($nvDriverRepo.Name), Files: $copiedCount" "SUCCESS"
         return $true
-        
     } catch {
         Log "Driver injection failed: $_" "ERROR"
         return $false
@@ -308,22 +287,40 @@ function Add-GPUDrivers {
     }
 }
 
+function Update-GPUDriversOverwritten {
+    Log "=== GPU DRIVER UPDATE MODULE ===" "INFO"
+    Log "This will overwrite existing GPU drivers with the latest version from the host" "WARN"
+    
+    # Confirm the user wants to proceed with driver update
+    if ((Read-Host "Continue with driver update? (Y/N)") -notmatch "^[Yy]$") {
+        Log "Driver update cancelled by user" "INFO"
+        return $false
+    }
+    
+    # This calls Add-GPUDrivers to overwrite drivers in the VM
+    if (Add-GPUDrivers) {
+        Log "GPU drivers updated successfully - VM drivers now match host version" "SUCCESS"
+        return $true
+    } else {
+        Log "GPU driver update failed" "ERROR"
+        return $false
+    }
+}
+
 function Complete-GPUSetup {
     Log "=== COMPLETE GPU SETUP MODULE ===" "INFO"
-    
     $vmName = Create-VM
-    if ([string]::IsNullOrWhiteSpace($vmName)) { 
+    if ([string]::IsNullOrWhiteSpace($vmName)) {
         Log "VM creation failed" "ERROR"
-        return 
+        return
     }
     
     # Ensure we pass just the VM name string
     Log "VM creation successful. Proceeding with GPU partition creation..." "SUCCESS"
-    if (!(Create-GPUPartition -InputVMName $vmName)) { 
+    if (!(Create-GPUPartition -InputVMName $vmName)) {
         Log "GPU partition failed" "ERROR"
-        return 
+        return
     }
-    
     Log "VM '$vmName' created with GPU partition. Install OS first, then run option 3 for drivers." "SUCCESS"
 }
 
@@ -336,31 +333,34 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 $continueLoop = $true
 while ($continueLoop) {
     Show-Menu
-    $choice = Read-Host "Select an option (1-5)"
-    
+    $choice = Read-Host "Select an option (1-6)"
     switch ($choice) {
-        "1" { 
+        "1" {
             $vmName = Create-VM
             if ($vmName) { Log "VM '$vmName' created successfully" "SUCCESS" }
             Read-Host "Press Enter to continue"
         }
-        "2" { 
+        "2" {
             if (Create-GPUPartition) { Log "GPU partition created successfully" "SUCCESS" }
             Read-Host "Press Enter to continue"
         }
-        "3" { 
+        "3" {
             if (Add-GPUDrivers) { Log "GPU drivers injected successfully" "SUCCESS" }
             Read-Host "Press Enter to continue"
         }
-        "4" { 
+        "4" {
             Complete-GPUSetup
             Read-Host "Press Enter to continue"
         }
-        "5" { 
+        "5" {
+            if (Update-GPUDriversOverwritten) { Log "GPU drivers updated successfully" "SUCCESS" }
+            Read-Host "Press Enter to continue"
+        }
+        "6" {
             Log "Exiting VM Manager..." "INFO"
             $continueLoop = $false
         }
-        default { 
+        default {
             Log "Invalid selection" "WARN"
             Start-Sleep 1
         }

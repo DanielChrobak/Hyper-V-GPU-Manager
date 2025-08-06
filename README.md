@@ -48,8 +48,8 @@ The script presents 6 main options:
 2. **Create GPU Partition** - Add GPU partitioning to existing VM
 3. **Add GPU Drivers to VM** - Inject NVIDIA drivers into VM disk
 4. **Complete GPU Setup** - Full automated setup (VM + GPU + ready for drivers)
-5. **Exit** - Close the application
-6. **Update GPU Drivers in VM** - Synchronize VM drivers with host (overwrite)
+5. **Update GPU Drivers in VM** - Synchronize VM drivers with host (overwrite)
+6. **Exit** - Close the application
 
 ## 📋 Detailed Workflow
 
@@ -79,12 +79,16 @@ The script presents 6 main options:
 - Creates VM with immediate GPU partition setup
 - **Note**: You must install the OS first, then use Option 3 for drivers
 
-### Option 6: Update GPU Drivers in VM
+### Option 5: Update GPU Drivers in VM ⭐ NEW
 - **Best Practice**: Keep VM drivers synchronized with host
 - Overwrites existing VM drivers with current host versions
 - Confirmation prompt before proceeding
 - Same reliable process as initial driver injection
 - Essential after host GPU driver updates
+
+### Option 6: Exit
+- Safely closes the application
+- Returns to PowerShell prompt
 
 ## ⚙️ Configuration Details
 
@@ -145,7 +149,7 @@ Example log entries:
 
 ### Driver Maintenance:
 7. **Monitor host driver updates** - Check NVIDIA GeForce Experience or manual updates
-8. **Update VM drivers** - Use Option 6 after any host GPU driver updates
+8. **Update VM drivers** - Use Option 5 after any host GPU driver updates
 9. **Verify compatibility** - Ensure both host and VM are running same driver version
 
 ### Important Notes:
@@ -194,7 +198,7 @@ Start-Process powershell.exe -Verb RunAs
 1. Update NVIDIA drivers on host system first
 2. Test host system stability and performance
 3. Power off gaming VMs completely
-4. Run script and choose Option 6 for each VM
+4. Run script and choose Option 5 for each VM
 5. Start VMs and verify GPU functionality
 
 ### Custom VM Paths
@@ -248,7 +252,7 @@ With proper configuration:
 **Driver Maintenance Process:**
 1. Update host NVIDIA drivers
 2. Power off all gaming VMs
-3. Run script and choose Option 6 for each VM
+3. Run script and choose Option 5 for each VM
 4. Confirm driver update when prompted
 5. Start VMs and verify functionality
 
