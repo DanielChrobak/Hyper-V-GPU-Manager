@@ -188,6 +188,82 @@ function Wait-ForPartitions {
     return $null
 }
 
+function Remove-ExistingDrivers {
+    param([string]$MountPoint)
+    Log "Checking for existing NVIDIA drivers in VM..."
+    
+    $driverRepoPath = "$MountPoint\Windows\System32\HostDriverStore\FileRepository"
+    $system32Path = "$MountPoint\Windows\System32"
+    $removedItems = 0
+    
+    # Remove existing driver repositories
+    if (Test-Path $driverRepoPath) {
+        $existingDrivers = Get-ChildItem $driverRepoPath -Directory | Where-Object { $_.Name -like "nv_dispi.inf_amd64*" }
+        if ($existingDrivers) {
+            Log "Found $($existingDrivers.Count) existing driver repositories in VM" "WARN"
+            foreach ($driver in $existingDrivers) {
+                try {
+                    Remove-Item $driver.FullName -Recurse -Force
+                    $removedItems++
+                    Log "Removed existing driver repository: $($driver.Name)" "INFO"
+                } catch {
+                    Log "Failed to remove driver repository: $($driver.Name) - $_" "WARN"
+                }
+            }
+        }
+    }
+    
+    # Remove existing NVIDIA system files
+    if (Test-Path $system32Path) {
+        $existingNvFiles = Get-ChildItem $system32Path -File | Where-Object { $_.Name -like "nv*" }
+        if ($existingNvFiles) {
+            Log "Found $($existingNvFiles.Count) existing NVIDIA system files in VM" "WARN"
+            foreach ($file in $existingNvFiles) {
+                try {
+                    Remove-Item $file.FullName -Force
+                    $removedItems++
+                    Log "Removed existing NVIDIA file: $($file.Name)" "INFO"
+                } catch {
+                    Log "Failed to remove NVIDIA file: $($file.Name) - $_" "WARN"
+                }
+            }
+        }
+    }
+    
+    if ($removedItems -gt 0) {
+        Log "Removed $removedItems existing NVIDIA driver components from VM" "SUCCESS"
+    } else {
+        Log "No existing NVIDIA drivers found in VM" "INFO"
+    }
+    
+    return $removedItems
+}
+
+function Get-HostDriverRepositories {
+    Log "Scanning for NVIDIA driver repositories on host..."
+    
+    $hostDriverRepos = Get-ChildItem "C:\Windows\System32\DriverStore\FileRepository" -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "nv_dispi.inf_amd64*" } | Sort-Object Name
+    
+    if (!$hostDriverRepos -or $hostDriverRepos.Count -eq 0) {
+        Log "No NVIDIA driver repositories found on host" "ERROR"
+        return $null
+    }
+    
+    Log "Found $($hostDriverRepos.Count) NVIDIA driver repositories on host - copying all for safety:" "INFO"
+    for ($i = 0; $i -lt $hostDriverRepos.Count; $i++) {
+        try {
+            $sizeBytes = ($hostDriverRepos[$i] | Get-ChildItem -Recurse -File | Measure-Object Length -Sum).Sum
+            $sizeMB = [math]::Round($sizeBytes / 1MB, 2)
+            Log "  [$($i + 1)] $($hostDriverRepos[$i].Name) ($sizeMB MB)" "INFO"
+        } catch {
+            Log "  [$($i + 1)] $($hostDriverRepos[$i].Name) (Size calculation failed)" "INFO"
+        }
+    }
+    
+    return $hostDriverRepos
+}
+
 function Add-GPUDrivers {
     param([string]$InputVMName = $null)
     Log "=== GPU DRIVER INJECTION MODULE ===" "INFO"
@@ -215,6 +291,21 @@ function Add-GPUDrivers {
         Read-Host "Press Enter when VM is off"
         if ((Get-VM -Name $vmName).State -ne "Off") { return $false }
     }
+    
+    # Get host driver repositories first (before mounting VM disk)
+    $hostDriverRepos = Get-HostDriverRepositories
+    if (!$hostDriverRepos) {
+        Log "Cannot proceed without host NVIDIA drivers" "ERROR"
+        return $false
+    }
+    
+    # Get host NVIDIA system files
+    $hostNvFiles = Get-ChildItem "C:\Windows\System32" -File | Where-Object { $_.Name -like "nv*" }
+    if (!$hostNvFiles -or $hostNvFiles.Count -eq 0) {
+        Log "No NVIDIA system files found on host" "ERROR"
+        return $false
+    }
+    Log "Found $($hostNvFiles.Count) NVIDIA system files on host" "INFO"
     
     $mountPoint = "C:\Temp\VMDiskMount"
     $mountedDisk = $null
@@ -248,27 +339,37 @@ function Add-GPUDrivers {
             }
         }
         
-        # Find and copy NVIDIA drivers
-        $nvDriverRepo = Get-ChildItem "C:\Windows\System32\DriverStore\FileRepository" -Directory |
-            Where-Object { $_.Name -like "nv_dispi.inf_amd64*" } | Select-Object -First 1
-        if (!$nvDriverRepo) { Log "NVIDIA drivers not found on host" "ERROR"; return $false }
+        # Remove existing drivers from VM
+        $removedCount = Remove-ExistingDrivers -MountPoint $mountPoint
         
-        # Copy driver repository
+        # Copy all driver repositories
         $destDriverPath = "$mountPoint\Windows\System32\HostDriverStore\FileRepository"
         if (!(Test-Path $destDriverPath)) { New-Item -Path $destDriverPath -ItemType Directory -Force | Out-Null }
-        Copy-Item -Path $nvDriverRepo.FullName -Destination $destDriverPath -Recurse -Force
         
-        # Copy NVIDIA system files
-        $nvFiles = Get-ChildItem "C:\Windows\System32" -File | Where-Object { $_.Name -like "nv*" }
+        $copiedRepos = 0
+        foreach ($repo in $hostDriverRepos) {
+            try {
+                Copy-Item -Path $repo.FullName -Destination $destDriverPath -Recurse -Force
+                $copiedRepos++
+                Log "Copied driver repository: $($repo.Name)" "INFO"
+            } catch {
+                Log "Failed to copy driver repository: $($repo.Name) - $_" "ERROR"
+            }
+        }
+        
+        # Copy all NVIDIA system files
         $destSystem32 = "$mountPoint\Windows\System32"
-        $copiedCount = 0
-        foreach ($file in $nvFiles) {
+        $copiedFiles = 0
+        foreach ($file in $hostNvFiles) {
             try {
                 Copy-Item -Path $file.FullName -Destination $destSystem32 -Force
-                $copiedCount++
-            } catch { }
+                $copiedFiles++
+            } catch {
+                Log "Failed to copy system file: $($file.Name)" "WARN"
+            }
         }
-        Log "Driver injection completed - Repository: $($nvDriverRepo.Name), Files: $copiedCount" "SUCCESS"
+        
+        Log "Driver injection completed - Repositories: $copiedRepos, System Files: $copiedFiles, Removed Old: $removedCount" "SUCCESS"
         return $true
     } catch {
         Log "Driver injection failed: $_" "ERROR"
@@ -289,7 +390,7 @@ function Add-GPUDrivers {
 
 function Update-GPUDriversOverwritten {
     Log "=== GPU DRIVER UPDATE MODULE ===" "INFO"
-    Log "This will overwrite existing GPU drivers with the latest version from the host" "WARN"
+    Log "This will remove old GPU drivers and install the latest version from the host" "WARN"
     
     # Confirm the user wants to proceed with driver update
     if ((Read-Host "Continue with driver update? (Y/N)") -notmatch "^[Yy]$") {
@@ -297,7 +398,7 @@ function Update-GPUDriversOverwritten {
         return $false
     }
     
-    # This calls Add-GPUDrivers to overwrite drivers in the VM
+    # This calls Add-GPUDrivers which now handles proper cleanup and replacement
     if (Add-GPUDrivers) {
         Log "GPU drivers updated successfully - VM drivers now match host version" "SUCCESS"
         return $true
