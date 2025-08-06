@@ -99,7 +99,7 @@ function Create-VM {
         Disable-VMIntegrationService -VMName $config.Name -Name "Guest Service Interface"
         
         # TPM setup
-        $tmpEnabled = Setup-VMTPM -VMName $config.Name
+        $tpmEnabled = Setup-VMTPM -VMName $config.Name
         
         # Attach ISO if exists
         $isoAttached = $false
@@ -107,7 +107,7 @@ function Create-VM {
             Add-VMDvdDrive -VMName $config.Name -Path $config.ISO
             $isoAttached = $true
         }
-        Log "VM '$($config.Name)' created successfully - RAM: $($config.RAM)GB, CPU: $($config.CPU), TPM: $tmpEnabled, ISO: $isoAttached" "SUCCESS"
+        Log "VM '$($config.Name)' created successfully - RAM: $($config.RAM)GB, CPU: $($config.CPU), TPM: $tpmEnabled, ISO: $isoAttached" "SUCCESS"
         return $config.Name
     } catch {
         Log "VM creation failed: $_" "ERROR"
