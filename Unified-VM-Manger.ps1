@@ -280,6 +280,52 @@ function Show-LoadingSpinner {
     Write-Host "`r  + $Message" -ForegroundColor $UIConfig.Success
 }
 
+function Stop-VMAndWait {
+    param([string]$VMName)
+    
+    $vm = Get-VM $VMName -EA SilentlyContinue
+    if (!$vm) { return $false }
+    
+    if ($vm.State -eq "Off") {
+        return $true
+    }
+    
+    Write-Host "`r  | Shutting down VM..." -ForegroundColor $UIConfig.Primary -NoNewline
+    
+    try {
+        Stop-VM $VMName -Force -EA Stop
+        
+        $timeout = 0
+        $maxTimeout = 60  # 60 seconds max wait
+        
+        while ((Get-VM $VMName).State -ne "Off" -and $timeout -lt $maxTimeout) {
+            Start-Sleep -Milliseconds 500
+            $timeout++
+            
+            # Update spinner
+            $spinChars = @('|', '/', '-', '\')
+            $char = $spinChars[$timeout % 4]
+            Write-Host "`r  $char Shutting down VM... ($timeout seconds)" -ForegroundColor $UIConfig.Primary -NoNewline
+        }
+        
+        $finalState = (Get-VM $VMName).State
+        
+        if ($finalState -eq "Off") {
+            Write-Host "`r  + VM shut down successfully            " -ForegroundColor $UIConfig.Success
+            Start-Sleep -Seconds 2  # Extra wait for file handles to release
+            return $true
+        } else {
+            Write-Host "`r  ! VM shutdown timeout - forcing off...  " -ForegroundColor $UIConfig.Warning
+            Stop-VM $VMName -TurnOff -Force -EA Stop
+            Start-Sleep -Seconds 3
+            return $true
+        }
+    } catch {
+        Write-Host "`r  X Failed to stop VM: $_" -ForegroundColor $UIConfig.Error
+        return $false
+    }
+}
+
 function Initialize-VM {
     param($Config)
 
@@ -385,8 +431,12 @@ function Set-GPUPartition {
     Write-Log "Allocation: $Percentage%" "INFO"
     Write-Host ""
 
+    # FIXED: Actually stop the VM and wait for it
     if ($vm.State -ne "Off") {
-        Show-LoadingSpinner "Shutting down VM..." 1
+        if (!(Stop-VMAndWait -VMName $VMName)) {
+            Write-Log "Failed to stop VM - cannot proceed" "ERROR"
+            return $false
+        }
     }
 
     try {
@@ -446,8 +496,12 @@ function Install-GPUDrivers {
     Write-Log "Target VM: $VMName" "INFO"
     Write-Host ""
 
+    # FIXED: Actually stop the VM and wait for it
     if ($vm.State -ne "Off") {
-        Show-LoadingSpinner "Shutting down VM..." 1
+        if (!(Stop-VMAndWait -VMName $VMName)) {
+            Write-Log "Failed to stop VM - cannot proceed" "ERROR"
+            return $false
+        }
     }
 
     try {
@@ -593,8 +647,12 @@ function Copy-VMAppsToDownloads {
     Write-Log "Found $($zipFiles.Count) application(s) to copy" "INFO"
     Write-Host ""
 
+    # FIXED: Actually stop the VM and wait for it
     if ($vm.State -ne "Off") {
-        Show-LoadingSpinner "Shutting down VM..." 1
+        if (!(Stop-VMAndWait -VMName $VMName)) {
+            Write-Log "Failed to stop VM - cannot proceed" "ERROR"
+            return $false
+        }
     }
 
     $mountPoint = "C:\Temp\VMMount_$(Get-Random)"
@@ -728,13 +786,36 @@ function Get-DetailedVMInfo {
     $vm = Get-VM $VMName -EA SilentlyContinue
     if (!$vm) { return $null }
 
-    $vhd = (Get-VMHardDiskDrive $VMName -EA SilentlyContinue).Path
+    # Get actual VHD size using Get-VHD with VMId
     $vhdSize = 0
-    if ($vhd -and (Test-Path $vhd)) {
-        $vhdSize = [math]::Round((Get-Item $vhd).Length / 1GB, 2)
+    try {
+        $vhdInfo = $vm.VMId | Get-VHD -EA SilentlyContinue
+        if ($vhdInfo) {
+            $vhdSize = [math]::Round($vhdInfo.Size / 1GB, 0)
+        }
+    } catch {
+        # Fallback to hard disk drive path method
+        $vhd = (Get-VMHardDiskDrive $VMName -EA SilentlyContinue).Path
+        if ($vhd -and (Test-Path $vhd)) {
+            try {
+                $vhdInfo = Get-VHD -Path $vhd -EA SilentlyContinue
+                $vhdSize = [math]::Round($vhdInfo.Size / 1GB, 0)
+            } catch {
+                # Final fallback to file size
+                $vhdSize = [math]::Round((Get-Item $vhd).Length / 1GB, 0)
+            }
+        }
     }
 
-    $ram = [math]::Round($vm.MemoryAssigned / 1GB, 2)
+    # Get RAM - handle case when VM is off (MemoryAssigned = 0)
+    $ram = 0
+    if ($vm.MemoryAssigned -gt 0) {
+        $ram = [math]::Round($vm.MemoryAssigned / 1GB, 0)
+    } else {
+        # VM is off, use MemoryStartup instead
+        $ram = [math]::Round($vm.MemoryStartup / 1GB, 0)
+    }
+
     $cpuCount = $vm.ProcessorCount
     $cpuThreads = $cpuCount * 2
 
@@ -779,44 +860,40 @@ function Show-SystemInfo {
     Write-Host "  > VM INVENTORY" -ForegroundColor $UIConfig.Primary
     Write-Host "  |" -ForegroundColor $UIConfig.Primary
 
-    $vmDetails = @()
     foreach ($vm in $vms) {
-        $vmDetails += Get-DetailedVMInfo -VMName $vm.Name
-    }
-
-    Write-Host "  +$('-' * 152)" -ForegroundColor $UIConfig.Primary
-    Write-Host "  | Name" -ForegroundColor $UIConfig.Primary -NoNewline
-    Write-Host "                | State       | RAM    | CPUs | Threads | Storage | GPU       |" -ForegroundColor $UIConfig.Primary
-    Write-Host "  +$('-' * 152)" -ForegroundColor $UIConfig.Primary
-
-    foreach ($vmInfo in $vmDetails) {
+        $vmInfo = Get-DetailedVMInfo -VMName $vm.Name
+        
+        if (!$vmInfo) { continue }
+        
         $stateColor = if ($vmInfo.State -eq "Running") { $UIConfig.Success } else { $UIConfig.Warning }
-
-        Write-Host "  | " -ForegroundColor $UIConfig.Primary -NoNewline
-        Write-Host "$($vmInfo.Name.PadRight(17))" -ForegroundColor White -NoNewline
-        Write-Host "| " -ForegroundColor $UIConfig.Primary -NoNewline
-        Write-Host "$($vmInfo.State.PadRight(11))" -ForegroundColor $stateColor -NoNewline
-        Write-Host " | " -ForegroundColor $UIConfig.Primary -NoNewline
-        Write-Host "$($vmInfo.RAM.ToString().PadRight(5))GB" -ForegroundColor Cyan -NoNewline
-        Write-Host " | " -ForegroundColor $UIConfig.Primary -NoNewline
-        Write-Host "$($vmInfo.CPUCount.ToString().PadRight(4))" -ForegroundColor Yellow -NoNewline
-        Write-Host " | " -ForegroundColor $UIConfig.Primary -NoNewline
-        Write-Host "$($vmInfo.CPUThreads.ToString().PadRight(7))" -ForegroundColor Yellow -NoNewline
-        Write-Host " | " -ForegroundColor $UIConfig.Primary -NoNewline
-        Write-Host "$($vmInfo.Storage.ToString().PadRight(7))GB" -ForegroundColor Magenta -NoNewline
-        Write-Host " | " -ForegroundColor $UIConfig.Primary -NoNewline
-        Write-Host "$($vmInfo.GPU.PadRight(9))" -ForegroundColor $UIConfig.Accent -NoNewline
-        Write-Host "|" -ForegroundColor $UIConfig.Primary
+        
+        Write-Host "  +$('-' * 76)" -ForegroundColor $UIConfig.Primary
+        Write-Host "  |  VM NAME       : " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host $vmInfo.Name -ForegroundColor White
+        
+        Write-Host "  |  State         : " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host $vmInfo.State -ForegroundColor $stateColor
+        
+        Write-Host "  |  RAM           : " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host "$($vmInfo.RAM) GB" -ForegroundColor Cyan
+        
+        Write-Host "  |  CPU Cores     : " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host $vmInfo.CPUCount -ForegroundColor Yellow
+        
+        Write-Host "  |  CPU Threads   : " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host $vmInfo.CPUThreads -ForegroundColor Yellow
+        
+        Write-Host "  |  Storage       : " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host "$($vmInfo.Storage) GB" -ForegroundColor Magenta
+        
+        Write-Host "  |  GPU Allocated : " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host $vmInfo.GPU -ForegroundColor $UIConfig.Accent
+        
+        Write-Host "  +$('-' * 76)" -ForegroundColor $UIConfig.Primary
+        Write-Host ""
     }
 
-    Write-Host "  +$('-' * 152)" -ForegroundColor $UIConfig.Primary
-    Write-Host "  |" -ForegroundColor $UIConfig.Primary
-    Write-Host "  |  Legend:" -ForegroundColor $UIConfig.Primary
-    Write-Host "  |    RAM = Memory Assigned  |  CPUs = CPU Core Count  |  Threads = Logical Processors" -ForegroundColor $UIConfig.Primary
-    Write-Host "  |    Storage = Virtual Disk Size  |  GPU = GPU Allocation %" -ForegroundColor $UIConfig.Primary
-    Write-Host "  |" -ForegroundColor $UIConfig.Primary
-
-    Write-Host "  >$('=' * 152)" -ForegroundColor $UIConfig.Primary
+    Write-Host "  >$('=' * 76)" -ForegroundColor $UIConfig.Primary
 
     Write-Host ""
     Write-Header "HOST GPU INFORMATION"
@@ -828,7 +905,7 @@ function Show-SystemInfo {
             $vramGB = [math]::Round($vramMB / 1024, 2)
         }
     } catch {
-
+        # Silently continue if nvidia-smi fails
     }
 
     $gpu = Get-WmiObject Win32_VideoController | Where-Object { $_.Name -like "*NVIDIA*" } | Select-Object -First 1
