@@ -2,7 +2,7 @@
 
 **Unified Hyper-V Manager with Automated GPU Partition Support**
 
-A streamlined PowerShell tool for creating and managing Hyper-V virtual machines with integrated GPU partitioning and NVIDIA driver injection. This solution consolidates VM creation, GPU resource allocation, and driver management into a single, efficient terminal interface.
+A streamlined PowerShell tool for creating and managing Hyper-V virtual machines with integrated GPU partitioning and NVIDIA driver injection. This solution consolidates VM creation, GPU resource allocation, and driver management into a single, efficient terminal interface with an intuitive arrow-key menu system.
 
 ⚠️ **Important:** This tool automates the initial setup (VM creation, GPU partition configuration, baseline driver injection). Application-specific compatibility issues and DLL troubleshooting remain manual tasks - see "Known Limitations" below.
 
@@ -10,15 +10,15 @@ A streamlined PowerShell tool for creating and managing Hyper-V virtual machines
 
 ## ✨ Key Features
 
-- **🚀 One-Click VM Creation** - Preset configurations for Gaming, Development, and Machine Learning
-- **🎯 Dynamic GPU Partitioning** - Configurable GPU allocation from 1-100% per VM
-- **💾 Automated Driver Injection** - Direct NVIDIA driver installation into VM disk images without manual intervention
-- **🔄 Driver Synchronization** - Keep VM drivers aligned with host GPU driver versions
-- **🖥️ Modern Terminal UI** - Clean menu system with color-coded logging and timestamps
+- **🚀 Interactive Navigation** - Arrow-key based menu system for intuitive control
+- **🎯 Quick Presets** - One-selection VM configurations for Gaming, Development, and Machine Learning
+- **💾 Dynamic GPU Partitioning** - Configurable GPU allocation from 1-100% per VM
+- **🔄 Automated Driver Injection** - Direct NVIDIA driver installation into VM disk images without manual intervention
+- **🖥️ Modern Terminal UI** - Clean, color-coded interface with real-time progress indicators
 - **⚙️ Complete Automation** - VM creation and driver injection in minutes
 - **🔧 Intelligent Detection** - Smart partition discovery, driver location, and error handling
-- **📊 System Dashboard** - Real-time VM status and accurate GPU VRAM reporting via nvidia-smi
-- **📡 Integrated Streaming & Virtual Devices** - Installs Sunshine streaming, Virtual Audio Drivers (VB-Cable), and Virtual Display Drivers automatically for seamless desktop streaming and audio routing
+- **📊 Detailed Dashboard** - Real-time VM status with GPU VRAM reporting via nvidia-smi
+- **📡 VM Apps Integration** - Automatic copying of tools to VM Downloads folder for easy setup
 
 ---
 
@@ -146,13 +146,46 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 ---
 
+## 🎮 Navigation Guide
+
+### Menu Navigation
+
+The tool uses an **arrow-key navigation system** for intuitive control:
+
+**Controls:**
+- **↑ Up Arrow** - Move selection up
+- **↓ Down Arrow** - Move selection down
+- **Enter** - Confirm selection
+
+**Visual Indicators:**
+- **>>** appears next to the currently selected option
+- Selected items are highlighted in **green**
+- Menu items cycle continuously (going up from the first item selects the last)
+
+**Example Menu:**
+```
+  |
+  |  (Use UP/DOWN arrows to navigate, ENTER to select)
+  |
+  |     Create New VM
+  |  >> Configure GPU Partition
+  |     Inject GPU Drivers
+  |     Complete Setup (VM + GPU + Drivers)
+  |     Update VM Drivers
+  |     List VMs & GPU Info
+  |     Copy VM Apps to Downloads
+  |     Exit
+```
+
+---
+
 ## 📋 Menu Options Explained
 
-### **[1] Create New VM**
-Creates a basic Hyper-V virtual machine with optimized settings.
+### **Create New VM**
+Creates a basic Hyper-V virtual machine with optimized settings using an arrow-key preset selector.
 
 **What it does:**
-- Prompts for VM configuration (3 presets + custom option)
+- Displays arrow-key navigable preset menu
 - Creates Generation 2 VM with UEFI support
 - Configures static RAM allocation (no dynamic memory)
 - Sets up TPM 2.0 and Secure Boot for Windows 11
@@ -161,19 +194,26 @@ Creates a basic Hyper-V virtual machine with optimized settings.
 - Sets boot order (DVD → HDD)
 
 **Presets:**
-- **Gaming VM**: 16GB RAM, 8 CPU, 256GB storage
-- **Dev VM**: 8GB RAM, 4 CPU, 128GB storage
-- **ML VM**: 32GB RAM, 12 CPU, 512GB storage
-- **Custom**: Specify your own values
+```
+  |     Gaming       | 16GB RAM, 8 CPU, 256GB Storage
+  |  >> Development  | 8GB RAM, 4 CPU, 128GB Storage
+  |     ML Training  | 32GB RAM, 12 CPU, 512GB Storage
+  |     Custom Configuration
+```
+
+**Navigation:**
+- Use **UP/DOWN** arrows to highlight desired preset
+- Press **ENTER** to select
+- Follow prompts for VM name and ISO path
 
 ---
 
-### **[2] Configure GPU Partition**
+### **Configure GPU Partition**
 Adds GPU partitioning to an existing VM.
 
 **What it does:**
-- Selects VM from existing Hyper-V machines
-- Prompts for GPU allocation percentage (1-100%)
+- Prompts for VM name (manual input)
+- Requests GPU allocation percentage (1-100%)
 - Auto-shuts down VM if running
 - Removes old GPU partition adapters
 - Calculates optimal partition values (VRAM, Encode, Decode, Compute)
@@ -189,7 +229,7 @@ MinValue = 1
 
 ---
 
-### **[3] Inject GPU Drivers**
+### **Inject GPU Drivers**
 Installs NVIDIA drivers directly into VM disk image.
 
 **What it does:**
@@ -213,29 +253,39 @@ Installs NVIDIA drivers directly into VM disk image.
 
 ---
 
-### **[4] Complete Setup (Recommended)**
+### **Complete Setup (Recommended)**
 Automated workflow combining VM creation and GPU partition configuration.
 
 **What it does:**
-1. Creates VM with your chosen preset/custom config
-2. Configures GPU partition with specified percentage
-3. Prepares VM for OS installation
+1. Launches arrow-key preset selector
+2. Creates VM with chosen configuration
+3. Prompts for GPU allocation percentage
+4. Configures GPU partition
+5. Prepares VM for OS installation
+
+**Interactive Flow:**
+```
+Step 1: Navigate presets with arrows → ENTER
+Step 2: Enter VM name (or press ENTER for default)
+Step 3: Enter ISO path (or press ENTER to skip)
+Step 4: Enter GPU allocation percentage
+```
 
 **Next Steps After:**
 1. Start the VM
 2. Install Windows from attached ISO
 3. Complete Windows setup
 4. Shut down VM
-5. Use Option [3] to inject drivers
+5. Navigate to **Inject GPU Drivers**
 6. **Manually install apps and troubleshoot DLL issues as needed**
 
 ---
 
-### **[5] Update VM Drivers**
+### **Update VM Drivers**
 Synchronizes VM GPU drivers with host system.
 
 **What it does:**
-- Same process as Option [3]
+- Same process as **Inject GPU Drivers**
 - Overwrites existing drivers with latest from host
 - Essential after host GPU driver updates
 - Maintains driver version compatibility
@@ -247,47 +297,74 @@ Synchronizes VM GPU drivers with host system.
 
 ---
 
-### **[6] List VMs & GPU Info**
-System dashboard showing VM status and GPU information.
+### **List VMs & GPU Info**
+System dashboard showing detailed VM and GPU information.
 
 **Displays:**
-- All Hyper-V VMs (Name, State, CPU Usage, RAM, GPU Enabled)
+
+**VM Inventory Table:**
+```
+  +----------------------------------------------------------------------------------------+
+  | Name            | State       | RAM    | CPUs | Threads | Storage | GPU       |
+  +----------------------------------------------------------------------------------------+
+  | Gaming-VM       | Running     | 16GB   | 8    | 16      | 256GB   | 50%       |
+  | Dev-VM          | Off         | 8GB    | 4    | 8       | 128GB   | 25%       |
+  +----------------------------------------------------------------------------------------+
+```
+
+**GPU Information:**
 - Host GPU model
 - Driver version
 - Accurate VRAM (via nvidia-smi, falls back to WMI)
+- Detection status
 
+**Legend:**
+- RAM = Memory Assigned
+- CPUs = CPU Core Count
+- Threads = Logical Processors
+- Storage = Virtual Disk Size
+- GPU = GPU Allocation %
 
 ---
 
-### **[7] Install Streaming Tools (Sunshine, VB-Cable, Virtual Display Driver)**
-Installs essential tools for streaming and audio/video virtualization inside the VM.
+### **Copy VM Apps to Downloads**
+Copies application zip files from host to VM's Downloads folder.
 
 **What it does:**
-- Copies **Sunshine.zip**, **VB-Cable.zip**, and **Virtual Display Driver.zip** to the VM during setup
-- Mounts the VM’s virtual hard disk automatically
-- Extracts and places files in the appropriate directories
-- Prepares Sunshine for immediate setup upon first boot
-- Allows virtual audio redirection and display extension for remote desktop streaming
+- Reads zip files from `VM Apps` folder in script directory
+- Mounts VM virtual hard disk
+- Detects primary user profile
+- Creates `VM Apps` subfolder in Downloads
+- Copies all zip files to VM
 
-**Included Tools:**
+**Setup Required:**
+1. Create folder named `VM Apps` in same directory as script
+2. Place application zip files in this folder (e.g., Sunshine.zip, VB-Cable.zip)
+3. Navigate to this menu option
+4. Enter VM name
+
+**Files are copied to:**
+```
+C:\Users\[Username]\Downloads\VM Apps\
+```
+
+**Included Tools (Examples):**
 | Tool | Purpose |
-|------|----------|
+|------|---------|
 | **Sunshine** | GPU-accelerated desktop streaming server compatible with Moonlight |
 | **VB-Cable** | Virtual audio cable driver for routing host audio to VM |
 | **Virtual Display Driver** | Enables headless display output for remote sessions |
 
 **When to Use:**
 - After driver injection and Windows installation are complete
-- Before configuring Sunshine inside the VM
+- Before configuring streaming inside the VM
 - Ideal for remote gaming or development environments
 
-**Next Steps Inside VM:**
-1. Log into Windows VM
-2. Open the extracted **Sunshine** folder
-3. Run `Sunshine.exe` as Administrator
-4. Configure user credentials and pairing with Moonlight
-5. Confirm VB-Cable is listed as an audio device
-6. Verify Virtual Display Adapter is present in Device Manager
+---
+
+### **Exit**
+Closes the GPU Virtualization Manager.
+
 ---
 
 ## 🛠️ Complete Workflow Example
@@ -296,11 +373,12 @@ Installs essential tools for streaming and audio/video virtualization inside the
 
 **Step 1 - Complete Setup**
 ```
-Select option: 4
-Select preset: 1 (Gaming)
-VM Name: Gaming-VM (press Enter for default)
-ISO Path: C:\ISOs\Windows11.iso
-GPU Allocation: 50
+1. Launch script → Navigate to "Complete Setup"
+2. Arrow keys → Select "Gaming | 16GB RAM, 8 CPU, 256GB Storage"
+3. Press ENTER
+4. VM Name: [Press ENTER for default "Gaming-VM"]
+5. ISO Path: C:\ISOs\Windows11.iso
+6. GPU Allocation: 50
 ```
 
 **Step 2 - Install Windows**
@@ -312,20 +390,29 @@ GPU Allocation: 50
 
 **Step 3 - Inject Drivers**
 ```
-Select option: 3
-VM Name: Gaming-VM
+1. Navigate to "Inject GPU Drivers"
+2. Press ENTER
+3. VM Name: Gaming-VM
+4. Wait for completion
 ```
 
-**Step 4 - Configure Guest OS** (Inside VM)
+**Step 4 - Copy VM Apps (Optional)**
+```
+1. Create "VM Apps" folder with zip files
+2. Navigate to "Copy VM Apps to Downloads"
+3. Press ENTER
+4. VM Name: Gaming-VM
+```
+
+**Step 5 - Configure Guest OS** (Inside VM)
 1. Start VM and log in
 2. Check Device Manager → Display Adapters
 3. Should see "Microsoft Hyper-V GPU Partition Adapter"
 4. Drivers auto-load from HostDriverStore
-5. Install VNC/RDP for remote access (manually)
-6. Install VB-Cable for audio redirection (manually)
-7. Disable Hyper-V display adapter in Device Manager
-8. **Troubleshoot app-specific DLL issues as they arise**
-9. Install games and test
+5. Extract and install tools from Downloads\VM Apps
+6. Disable Hyper-V display adapter in Device Manager
+7. **Troubleshoot app-specific DLL issues as they arise**
+8. Install games and test
 
 ---
 
@@ -422,25 +509,44 @@ C:\Windows\System32\nv*.exe
 
 ---
 
-## 🎨 Logging System
+## 🎨 UI Design Elements
+
+### Color-Coded Logging
 
 The tool provides real-time feedback with color-coded logging:
 
 | Level | Icon | Color | Purpose |
 |-------|------|-------|---------|
-| **INFO** | [i] | Cyan | General information and progress |
-| **SUCCESS** | [+] | Green | Successful operations |
-| **WARN** | [!] | Yellow | Warnings and important notices |
-| **ERROR** | [X] | Red | Errors requiring attention |
-| **HEADER** | [>] | Magenta | Section headers and major steps |
+| **INFO** | > | Cyan | General information and progress |
+| **SUCCESS** | + | Green | Successful operations |
+| **WARN** | ! | Yellow | Warnings and important notices |
+| **ERROR** | X | Red | Errors requiring attention |
+| **HEADER** | ~ | Magenta | Section headers and major steps |
+| **DEBUG** | # | Dark Cyan | Debug information |
 
-**Example Output:**
+### Progress Indicators
+
+**Loading Spinner:**
 ```
-[20:15:42] [>] Initializing VM: Gaming-VM
-[20:15:43] [+] VM created: Gaming-VM | RAM: 16GB | CPU: 8 | Storage: 256GB
-[20:15:44] [+] Boot order configured: DVD first
-[20:15:44] [+] ISO attached
-[20:15:45] [>] GPU configured: 50% allocated to Gaming-VM
+  | Creating VM configuration...
+  / Configuring processor and memory...
+  - Applying security settings...
+  \ Finalizing VM setup...
+  + Complete!
+```
+
+**Section Headers:**
+```
+  +============================================================================+
+  |  GPU PARTITION CONFIGURATION                                               |
+  +============================================================================+
+```
+
+**Section Dividers:**
+```
+  +----------------------------------------------------------------------------+
+  |  VM CREATED SUCCESSFULLY                                                   |
+  +----------------------------------------------------------------------------+
 ```
 
 ---
@@ -451,18 +557,18 @@ The tool provides real-time feedback with color-coded logging:
 
 **Scenario:** 2 VMs on RTX 4090
 
-```powershell
-# VM 1: Gaming-VM (40% GPU)
-Select option: 2
-VM Name: Gaming-VM
-GPU Allocation: 40
+```
+VM 1: Gaming-VM
+  → Navigate to "Configure GPU Partition"
+  → Enter VM Name: Gaming-VM
+  → GPU Allocation: 40
 
-# VM 2: Dev-VM (40% GPU)
-Select option: 2
-VM Name: Dev-VM
-GPU Allocation: 40
+VM 2: Dev-VM
+  → Navigate to "Configure GPU Partition"
+  → Enter VM Name: Dev-VM
+  → GPU Allocation: 40
 
-# Remaining 20% for host
+Remaining 20% for host
 ```
 
 **Result:** Both VMs have GPU access simultaneously. Combined load shouldn't exceed ~80% to avoid host instability.
@@ -588,6 +694,9 @@ Monitor host system stability at each level.
 
 ## ❓ FAQ
 
+**Q: How do I navigate the menu?**
+A: Use UP/DOWN arrow keys to move between options. The selected option is highlighted with ">>" in green. Press ENTER to confirm your selection.
+
 **Q: Why did my app crash after driver injection?**
 A: Missing application-specific DLLs. Check `Event Viewer > Windows Logs > Application` for DLL errors. Manually copy the missing DLL from host `C:\Windows\System32` to VM `C:\Windows\System32`.
 
@@ -598,22 +707,29 @@ A: GPU-PV translates OpenGL to DirectX 12, which causes performance issues. If a
 A: Not tested. The driver paths are different for AMD. Community contributions welcome on GitHub.
 
 **Q: How do I reduce setup time?**
-A: In future versions, we plan to add unattended Windows installation and VHD templates. For now, this tool saves ~20 minutes of manual driver setup.
+A: Use the "Complete Setup" option and follow the preset configurations. This automates VM creation and GPU partition in one workflow.
 
 **Q: Can I run multiple VMs simultaneously with GPU access?**
 A: Yes, allocate GPU percentages totaling <80%. More than 80% combined load may cause instability.
+
+**Q: How do I copy apps to my VM?**
+A: Create a folder named "VM Apps" in the script directory, place your zip files there, then use the "Copy VM Apps to Downloads" option.
+
+**Q: Can I change preset values after selection?**
+A: No, but you can select "Custom Configuration" from the preset menu to specify exact values.
 
 ---
 
 ## 🙏 Credits & Acknowledgments
 
-Built upon the foundation of GPU-P (GPU Paravirtualization) technology developed by Microsoft for Windows Server and Hyper-V. This tool consolidates community knowledge and best practices into an accessible, automated solution.
+Built upon the foundation of GPU-P (GPU Paravirtualization) technology developed by Microsoft for Windows Server and Hyper-V. This tool consolidates community knowledge and best practices into an accessible, automated solution with modern arrow-key navigation.
 
 **Special thanks to:**
 - Microsoft Hyper-V team for GPU-P feature development
 - NVIDIA for driver support
 - r/VFIO and r/HyperV communities for shared knowledge
 - Early testers and contributors for identifying DLL and OpenGL issues
+- UI/UX inspiration from modern terminal applications
 
 ---
 
@@ -631,9 +747,12 @@ This tool is provided as-is for educational and personal use. No warranty is pro
 
 *Saves you setup time. Leaves app troubleshooting to you.*
 
+*Navigate with arrows. Create with confidence.*
+
 ---
 
-**Latest Version:** v3.0
+**Latest Version:** v3.0 MODERN
 **Last Updated:** October 2025
 **Compatibility:** Windows 10/11 Pro, PowerShell 5.1+, NVIDIA GPUs only
 **Supports:** DirectX 9/10/11/12 ✅ | OpenGL (via DX12 translation) ⚠️ | Vulkan ❌ | DLSS/Frame Gen ❌
+**Navigation:** Arrow Keys (UP/DOWN) + ENTER
