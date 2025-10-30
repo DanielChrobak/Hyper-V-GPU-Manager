@@ -18,6 +18,7 @@ A streamlined PowerShell tool for creating and managing Hyper-V virtual machines
 - **⚙️ Complete Automation** - VM creation and driver injection in minutes
 - **🔧 Intelligent Detection** - Smart partition discovery, driver location, and error handling
 - **📊 System Dashboard** - Real-time VM status and accurate GPU VRAM reporting via nvidia-smi
+- **📡 Integrated Streaming & Virtual Devices** - Installs Sunshine streaming, Virtual Audio Drivers (VB-Cable), and Virtual Display Drivers automatically for seamless desktop streaming and audio routing
 
 ---
 
@@ -255,6 +256,38 @@ System dashboard showing VM status and GPU information.
 - Driver version
 - Accurate VRAM (via nvidia-smi, falls back to WMI)
 
+
+---
+
+### **[7] Install Streaming Tools (Sunshine, VB-Cable, Virtual Display Driver)**
+Installs essential tools for streaming and audio/video virtualization inside the VM.
+
+**What it does:**
+- Copies **Sunshine.zip**, **VB-Cable.zip**, and **Virtual Display Driver.zip** to the VM during setup
+- Mounts the VM’s virtual hard disk automatically
+- Extracts and places files in the appropriate directories
+- Prepares Sunshine for immediate setup upon first boot
+- Allows virtual audio redirection and display extension for remote desktop streaming
+
+**Included Tools:**
+| Tool | Purpose |
+|------|----------|
+| **Sunshine** | GPU-accelerated desktop streaming server compatible with Moonlight |
+| **VB-Cable** | Virtual audio cable driver for routing host audio to VM |
+| **Virtual Display Driver** | Enables headless display output for remote sessions |
+
+**When to Use:**
+- After driver injection and Windows installation are complete
+- Before configuring Sunshine inside the VM
+- Ideal for remote gaming or development environments
+
+**Next Steps Inside VM:**
+1. Log into Windows VM
+2. Open the extracted **Sunshine** folder
+3. Run `Sunshine.exe` as Administrator
+4. Configure user credentials and pairing with Moonlight
+5. Confirm VB-Cable is listed as an audio device
+6. Verify Virtual Display Adapter is present in Device Manager
 ---
 
 ## 🛠️ Complete Workflow Example
