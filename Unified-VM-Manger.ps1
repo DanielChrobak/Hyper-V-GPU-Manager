@@ -722,36 +722,101 @@ function Invoke-CompleteSetup {
     Write-Host ""
 }
 
+function Get-DetailedVMInfo {
+    param([string]$VMName)
+
+    $vm = Get-VM $VMName -EA SilentlyContinue
+    if (!$vm) { return $null }
+
+    $vhd = (Get-VMHardDiskDrive $VMName -EA SilentlyContinue).Path
+    $vhdSize = 0
+    if ($vhd -and (Test-Path $vhd)) {
+        $vhdSize = [math]::Round((Get-Item $vhd).Length / 1GB, 2)
+    }
+
+    $ram = [math]::Round($vm.MemoryAssigned / 1GB, 2)
+    $cpuCount = $vm.ProcessorCount
+    $cpuThreads = $cpuCount * 2
+
+    $gpuAdapter = Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue
+    $gpuAllocated = "None"
+    if ($gpuAdapter) {
+        $maxVram = $gpuAdapter.MaxPartitionVRAM
+        $gpuPercent = [math]::Round(($maxVram / 1000000000) * 100, 0)
+        $gpuAllocated = "$gpuPercent%"
+    }
+
+    $stateString = [string]$vm.State
+
+    return @{
+        Name = $vm.Name
+        State = $stateString
+        RAM = $ram
+        CPUCount = $cpuCount
+        CPUThreads = $cpuThreads
+        Storage = $vhdSize
+        GPU = $gpuAllocated
+    }
+}
+
 function Show-SystemInfo {
     Show-Banner
 
-    Write-Header "HYPER-V VIRTUAL MACHINES"
+    Write-Header "HYPER-V VIRTUAL MACHINES - DETAILED INFO"
 
-    $vms = Get-VM | Select-Object Name, State, CPUUsage, @{N='RAM_GB';E={[math]::Round($_.MemoryAssigned/1GB,2)}}, @{N='GPU';E={(Get-VMGpuPartitionAdapter $_.Name -EA SilentlyContinue) -ne $null}}
+    Write-Log "Gathering VM information..." "INFO"
+    Write-Host ""
 
-    if ($vms) {
-        Write-Host "  > VM LIST" -ForegroundColor $UIConfig.Primary
-        Write-Host "  |" -ForegroundColor $UIConfig.Primary
+    $vms = @(Get-VM)
 
-        foreach ($vm in $vms) {
-            $gpuStatus = if ($vm.GPU) { "[GPU]" } else { "[-]" }
-            $stateColor = if ($vm.State -eq "Running") { $UIConfig.Success } else { $UIConfig.Warning }
-            $stateString = [string]$vm.State
-
-            Write-Host "  |  " -ForegroundColor $UIConfig.Primary -NoNewline
-            Write-Host "$($vm.Name.PadRight(20))" -ForegroundColor White -NoNewline
-            Write-Host " | " -ForegroundColor $UIConfig.DarkNeutral -NoNewline
-            Write-Host "$($stateString.PadRight(10))" -ForegroundColor $stateColor -NoNewline
-            Write-Host " | " -ForegroundColor $UIConfig.DarkNeutral -NoNewline
-            Write-Host "$($vm.RAM_GB)GB RAM" -ForegroundColor Cyan -NoNewline
-            Write-Host " | " -ForegroundColor $UIConfig.DarkNeutral -NoNewline
-            Write-Host $gpuStatus -ForegroundColor $UIConfig.Accent
-        }
-
-        Write-Host "  >$('=' * 76)" -ForegroundColor $UIConfig.Primary
-    } else {
+    if ($vms.Count -eq 0) {
         Write-Log "No VMs found" "WARN"
+        Write-Host ""
+        Read-Host "  Press Enter to continue"
+        return
     }
+
+    Write-Host "  > VM INVENTORY" -ForegroundColor $UIConfig.Primary
+    Write-Host "  |" -ForegroundColor $UIConfig.Primary
+
+    $vmDetails = @()
+    foreach ($vm in $vms) {
+        $vmDetails += Get-DetailedVMInfo -VMName $vm.Name
+    }
+
+    Write-Host "  +$('-' * 152)" -ForegroundColor $UIConfig.Primary
+    Write-Host "  | Name" -ForegroundColor $UIConfig.Primary -NoNewline
+    Write-Host "                | State       | RAM    | CPUs | Threads | Storage | GPU       |" -ForegroundColor $UIConfig.Primary
+    Write-Host "  +$('-' * 152)" -ForegroundColor $UIConfig.Primary
+
+    foreach ($vmInfo in $vmDetails) {
+        $stateColor = if ($vmInfo.State -eq "Running") { $UIConfig.Success } else { $UIConfig.Warning }
+
+        Write-Host "  | " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host "$($vmInfo.Name.PadRight(17))" -ForegroundColor White -NoNewline
+        Write-Host "| " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host "$($vmInfo.State.PadRight(11))" -ForegroundColor $stateColor -NoNewline
+        Write-Host " | " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host "$($vmInfo.RAM.ToString().PadRight(5))GB" -ForegroundColor Cyan -NoNewline
+        Write-Host " | " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host "$($vmInfo.CPUCount.ToString().PadRight(4))" -ForegroundColor Yellow -NoNewline
+        Write-Host " | " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host "$($vmInfo.CPUThreads.ToString().PadRight(7))" -ForegroundColor Yellow -NoNewline
+        Write-Host " | " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host "$($vmInfo.Storage.ToString().PadRight(7))GB" -ForegroundColor Magenta -NoNewline
+        Write-Host " | " -ForegroundColor $UIConfig.Primary -NoNewline
+        Write-Host "$($vmInfo.GPU.PadRight(9))" -ForegroundColor $UIConfig.Accent -NoNewline
+        Write-Host "|" -ForegroundColor $UIConfig.Primary
+    }
+
+    Write-Host "  +$('-' * 152)" -ForegroundColor $UIConfig.Primary
+    Write-Host "  |" -ForegroundColor $UIConfig.Primary
+    Write-Host "  |  Legend:" -ForegroundColor $UIConfig.Primary
+    Write-Host "  |    RAM = Memory Assigned  |  CPUs = CPU Core Count  |  Threads = Logical Processors" -ForegroundColor $UIConfig.Primary
+    Write-Host "  |    Storage = Virtual Disk Size  |  GPU = GPU Allocation %" -ForegroundColor $UIConfig.Primary
+    Write-Host "  |" -ForegroundColor $UIConfig.Primary
+
+    Write-Host "  >$('=' * 152)" -ForegroundColor $UIConfig.Primary
 
     Write-Host ""
     Write-Header "HOST GPU INFORMATION"
