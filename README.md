@@ -2,7 +2,9 @@
 
 **Unified Hyper-V Manager with Automated GPU Partition Support**
 
-A streamlined PowerShell tool for creating and managing Hyper-V virtual machines with integrated GPU partitioning and NVIDIA driver injection. This solution consolidates VM creation, GPU resource allocation, and driver management into a single, efficient terminal interface - democratizing GPU virtualization beyond enterprise-exclusive solutions.
+A streamlined PowerShell tool for creating and managing Hyper-V virtual machines with integrated GPU partitioning and NVIDIA driver injection. This solution consolidates VM creation, GPU resource allocation, and driver management into a single, efficient terminal interface.
+
+⚠️ **Important:** This tool automates the initial setup (VM creation, GPU partition configuration, baseline driver injection). Application-specific compatibility issues and DLL troubleshooting remain manual tasks - see "Known Limitations" below.
 
 ---
 
@@ -13,9 +15,76 @@ A streamlined PowerShell tool for creating and managing Hyper-V virtual machines
 - **💾 Automated Driver Injection** - Direct NVIDIA driver installation into VM disk images without manual intervention
 - **🔄 Driver Synchronization** - Keep VM drivers aligned with host GPU driver versions
 - **🖥️ Modern Terminal UI** - Clean menu system with color-coded logging and timestamps
-- **⚙️ Complete Automation** - From VM creation to driver installation in minutes, not hours
+- **⚙️ Complete Automation** - VM creation and driver injection in minutes
 - **🔧 Intelligent Detection** - Smart partition discovery, driver location, and error handling
 - **📊 System Dashboard** - Real-time VM status and accurate GPU VRAM reporting via nvidia-smi
+
+---
+
+## 🚨 Known Limitations & Issues
+
+### ⚠️ Critical: Application Compatibility (DLL Requirements)
+
+**What Works:**
+- Basic DirectX 9/10/11/12 games and applications
+- Standard NVIDIA display drivers and partition detection
+- VM-to-GPU communication for graphics rendering
+
+**What Doesn't Work / Requires Manual Setup:**
+- **Missing Application DLLs** - The script copies baseline NVIDIA drivers (`nv_dispi.inf_amd64` + `nv*.dll`/`nv*.exe`), but many applications require additional libraries not included in the basic driver set:
+  - CUDA runtime libraries (curand64.dll, cufft64.dll, etc.) - needed for GPU compute, ML frameworks
+  - OpenCL libraries - required by some professional software
+  - Application-specific vendor libraries
+  - **This is the biggest source of "app won't run" issues after driver injection**
+
+**Manual Workaround:**
+If an application fails to run in the VM after driver injection, you'll need to manually identify and copy the missing DLLs from the host `C:\Windows\System32` to the VM's `C:\Windows\System32`. For CUDA-dependent apps, you may need to download the CUDA toolkit separately inside the VM.
+
+---
+
+### ⚠️ OpenGL Applications - DirectX Translation Layer
+
+**Issue:** GPU-PV translates OpenGL calls to DirectX 12 through a compatibility layer. This causes:
+- **Performance degradation** in OpenGL-heavy applications
+- **Rendering glitches or crashes** in certain OpenGL features
+- **Incompatibility** with advanced OpenGL extensions
+- **No support** for Vulkan, DLSS, or Frame Generation
+
+**DirectX Support:** ✅ Fully supported (DX9, DX10, DX11, DX12)
+**OpenGL Support:** ⚠️ Translated through DX12 (use with caution)
+**Vulkan Support:** ❌ Not supported
+**DLSS/Frame Gen:** ❌ Not supported
+
+**Recommendation:** If your primary application uses OpenGL, GPU-PV may not be the best solution. Consider GPU passthrough or native gaming on the host instead.
+
+---
+
+### ⚠️ GPU Support - NVIDIA Only
+
+**Supported:** ✅ NVIDIA GeForce (GTX 1060 or better, 30/40/50 series recommended)
+**AMD Support:** ❌ Not tested (driver paths are different)
+**Intel Arc:** ❌ Not tested
+
+The tool scans for NVIDIA drivers specifically. AMD and Intel GPU support would require different driver paths and has not been validated.
+
+---
+
+### ⚠️ Manual Installation Steps Still Required
+
+**What's Automated:**
+- VM creation
+- GPU partition configuration
+- Baseline driver injection
+
+**What You Still Need to Do:**
+1. Install Windows manually in the VM (no unattended setup yet)
+2. Download and install application-specific dependencies
+3. Configure VNC/RDP for remote access
+4. Install games/software inside the VM
+5. Troubleshoot app-specific DLL issues
+6. Per-application tuning and configuration
+
+**Estimated Time:** 30-45 minutes from VM creation to playable setup (this tool saves ~20 minutes of driver setup)
 
 ---
 
@@ -92,9 +161,11 @@ Creates a basic Hyper-V virtual machine with optimized settings.
 
 **Presets:**
 - **Gaming VM**: 16GB RAM, 8 CPU, 256GB storage
-- **Dev VM**: 8GB RAM, 4 CPU, 128GB storage  
+- **Dev VM**: 8GB RAM, 4 CPU, 128GB storage
 - **ML VM**: 32GB RAM, 12 CPU, 512GB storage
 - **Custom**: Specify your own values
+
+---
 
 ### **[2] Configure GPU Partition**
 Adds GPU partitioning to an existing VM.
@@ -115,6 +186,8 @@ OptimalValue = MaxValue - 1
 MinValue = 1
 ```
 
+---
+
 ### **[3] Inject GPU Drivers**
 Installs NVIDIA drivers directly into VM disk image.
 
@@ -129,7 +202,15 @@ Installs NVIDIA drivers directly into VM disk image.
 - Copies system files (nv*.dll, nv*.exe)
 - Safe cleanup and disk unmount
 
+**What it DOESN'T do:**
+- Copy application-specific DLL dependencies
+- Install CUDA runtime (if needed for compute tasks)
+- Install VNC/RDP software
+- Configure remote access
+
 **⚠️ Important:** Windows must be installed in the VM before using this option.
+
+---
 
 ### **[4] Complete Setup (Recommended)**
 Automated workflow combining VM creation and GPU partition configuration.
@@ -145,6 +226,9 @@ Automated workflow combining VM creation and GPU partition configuration.
 3. Complete Windows setup
 4. Shut down VM
 5. Use Option [3] to inject drivers
+6. **Manually install apps and troubleshoot DLL issues as needed**
+
+---
 
 ### **[5] Update VM Drivers**
 Synchronizes VM GPU drivers with host system.
@@ -159,6 +243,8 @@ Synchronizes VM GPU drivers with host system.
 - You updated NVIDIA drivers on the host
 - VM has driver issues or outdated drivers
 - After Windows updates that affect GPU drivers
+
+---
 
 ### **[6] List VMs & GPU Info**
 System dashboard showing VM status and GPU information.
@@ -202,10 +288,11 @@ VM Name: Gaming-VM
 2. Check Device Manager → Display Adapters
 3. Should see "Microsoft Hyper-V GPU Partition Adapter"
 4. Drivers auto-load from HostDriverStore
-5. Install VNC/RDP for remote access
-6. Install VB-Cable for audio redirection
+5. Install VNC/RDP for remote access (manually)
+6. Install VB-Cable for audio redirection (manually)
 7. Disable Hyper-V display adapter in Device Manager
-8. Install games and enjoy!
+8. **Troubleshoot app-specific DLL issues as they arise**
+9. Install games and test
 
 ---
 
@@ -276,6 +363,13 @@ C:\Windows\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_*
 C:\Windows\System32\nv*.dll
 C:\Windows\System32\nv*.exe
 ```
+
+**What Gets Copied:**
+- ✅ NVIDIA display driver repo (nv_dispi.inf_amd64*)
+- ✅ Basic NVIDIA system DLLs (nv*.dll, nv*.exe)
+- ❌ CUDA runtime libraries
+- ❌ OpenCL libraries
+- ❌ Application-specific dependencies
 
 **VM Injection Targets:**
 ```
@@ -387,31 +481,56 @@ Monitor host system stability at each level.
 
 ---
 
+## 📊 Application Compatibility Guide
+
+### DirectX Games (✅ Well Supported)
+- Most modern games using DirectX 11/12
+- Good performance, few compatibility issues
+- **Examples:** Call of Duty, Fortnite, Valorant, Minecraft (DX mode)
+
+### OpenGL Applications (⚠️ Compatibility Layer)
+- Runs through DX12 translation
+- **May experience:** Glitches, performance drops, crashes
+- **Examples:** Blender (OpenGL mode), older games, some professional CAD software
+- **Recommendation:** Use DirectX version if available
+
+### CUDA/GPU Compute (⚠️ Requires Manual Setup)
+- Basic compute support through GPU partition
+- **Requires:** Manual installation of CUDA toolkit inside VM
+- **Examples:** TensorFlow, PyTorch, CuPy
+- **Note:** Must copy CUDA runtime DLLs manually
+
+### Vulkan Applications (❌ Not Supported)
+- GPU-PV does not support Vulkan
+- Consider alternative virtualization solutions
+
+---
+
 ## 🎮 Use Cases
 
-### Gaming VM
-- Play Windows-exclusive games on Linux host (via WSL2/Hyper-V)
-- Isolate gaming environment from work environment
-- Test games before installing on main system
-- Stream games to other devices in home
+### Gaming VM ✅
+- DirectX games work well
+- 50-60% GPU allocation for good performance
+- Add VNC for streaming or remote play
+- **Best Games:** Modern AAA titles using DirectX
 
-### Development VM
-- Test applications in isolated environment
-- GPU-accelerated development (Unity, Unreal, Blender)
-- CUDA/ML development without affecting host
-- Multiple development environments on one machine
+### Development VM ✅
+- Unity/Unreal development (GPU accelerated)
+- GPU-accelerated testing
+- Isolated development environments
+- **Caveat:** OpenGL-heavy workflows may struggle
 
-### Machine Learning
-- Training models with GPU acceleration
-- Isolated Python/CUDA environments
-- Jupyter notebooks with GPU access
-- TensorFlow/PyTorch development
+### Machine Learning VM ⚠️
+- CUDA support works but requires manual setup
+- Good for training workloads
+- **Note:** Must install CUDA toolkit manually inside VM
+- **Caveat:** TensorFlow/PyTorch need dependency troubleshooting
 
-### Content Creation
-- Video editing with GPU acceleration (DaVinci Resolve)
-- 3D rendering (Blender, Cinema 4D)
-- Photo editing (Photoshop GPU features)
-- Live streaming setup
+### Content Creation ⚠️
+- DaVinci Resolve (CUDA rendering) - manual CUDA setup required
+- Blender (OpenGL issue) - use Cycles with CUDA or Eevee
+- Photo editing generally works
+- **Caveat:** Check application's rendering engine compatibility
 
 ---
 
@@ -434,6 +553,25 @@ Monitor host system stability at each level.
 
 ---
 
+## ❓ FAQ
+
+**Q: Why did my app crash after driver injection?**
+A: Missing application-specific DLLs. Check `Event Viewer > Windows Logs > Application` for DLL errors. Manually copy the missing DLL from host `C:\Windows\System32` to VM `C:\Windows\System32`.
+
+**Q: OpenGL games are laggy/broken. What do I do?**
+A: GPU-PV translates OpenGL to DirectX 12, which causes performance issues. If a DirectX version exists, use that instead. Otherwise, consider GPU passthrough.
+
+**Q: Can I use AMD GPUs?**
+A: Not tested. The driver paths are different for AMD. Community contributions welcome on GitHub.
+
+**Q: How do I reduce setup time?**
+A: In future versions, we plan to add unattended Windows installation and VHD templates. For now, this tool saves ~20 minutes of manual driver setup.
+
+**Q: Can I run multiple VMs simultaneously with GPU access?**
+A: Yes, allocate GPU percentages totaling <80%. More than 80% combined load may cause instability.
+
+---
+
 ## 🙏 Credits & Acknowledgments
 
 Built upon the foundation of GPU-P (GPU Paravirtualization) technology developed by Microsoft for Windows Server and Hyper-V. This tool consolidates community knowledge and best practices into an accessible, automated solution.
@@ -442,7 +580,7 @@ Built upon the foundation of GPU-P (GPU Paravirtualization) technology developed
 - Microsoft Hyper-V team for GPU-P feature development
 - NVIDIA for driver support
 - r/VFIO and r/HyperV communities for shared knowledge
-- Early testers and contributors
+- Early testers and contributors for identifying DLL and OpenGL issues
 
 ---
 
@@ -450,7 +588,7 @@ Built upon the foundation of GPU-P (GPU Paravirtualization) technology developed
 
 This tool is provided as-is for educational and personal use. No warranty is provided. Use at your own risk.
 
-**Disclaimer:** GPU virtualization requires compatible hardware and may not work with all GPU models or driver versions. Always backup important data before creating VMs.
+**Disclaimer:** GPU virtualization requires compatible hardware and may not work with all GPU models or driver versions. Application compatibility varies - this tool automates the initial setup but cannot prevent per-app compatibility issues. Always backup important data before creating VMs.
 
 ---
 
@@ -458,8 +596,11 @@ This tool is provided as-is for educational and personal use. No warranty is pro
 
 *Built for power users, streamlined for everyone.*
 
+*Saves you setup time. Leaves app troubleshooting to you.*
+
 ---
 
-**Latest Version:** v3.0  
-**Last Updated:** October 2025  
-**Compatibility:** Windows 10/11 Pro, PowerShell 5.1+, NVIDIA GPUs
+**Latest Version:** v3.0
+**Last Updated:** October 2025
+**Compatibility:** Windows 10/11 Pro, PowerShell 5.1+, NVIDIA GPUs only
+**Supports:** DirectX 9/10/11/12 ✅ | OpenGL (via DX12 translation) ⚠️ | Vulkan ❌ | DLSS/Frame Gen ❌
