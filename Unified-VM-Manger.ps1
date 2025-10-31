@@ -94,9 +94,9 @@ function Show-Banner {
     Write-Host ""
     Write-Host "      +===============================================================+" -ForegroundColor $UIConfig.Accent
     Write-Host "      |                                                               |" -ForegroundColor $UIConfig.Accent
-    Write-Host "      |          *  GPU VIRTUALIZATION MANAGER  v3.0  *              |" -ForegroundColor $UIConfig.Accent
+    Write-Host "      |          *  GPU VIRTUALIZATION MANAGER  v3.0  *               |" -ForegroundColor $UIConfig.Accent
     Write-Host "      |                                                               |" -ForegroundColor $UIConfig.Accent
-    Write-Host "      |      Unified Hyper-V Manager with GPU Partition Support      |" -ForegroundColor $UIConfig.Accent
+    Write-Host "      |      Unified Hyper-V Manager with GPU Partition Support       |" -ForegroundColor $UIConfig.Accent
     Write-Host "      |                                                               |" -ForegroundColor $UIConfig.Accent
     Write-Host "      +===============================================================+" -ForegroundColor $UIConfig.Accent
     Write-Host ""
@@ -161,8 +161,8 @@ function Select-PresetMenu {
     param()
 
     $presets = @(
-        "Gaming       | 16GB RAM, 8 CPU, 256GB Storage",
-        "Development | 8GB RAM, 4 CPU, 128GB Storage",
+        "Gaming       | 16GB RAM, 8 CPU,  256GB Storage",
+        "Development  | 8GB RAM,  4 CPU,   128GB Storage",
         "ML Training  | 32GB RAM, 12 CPU, 512GB Storage",
         "Custom Configuration"
     )
