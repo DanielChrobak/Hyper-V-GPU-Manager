@@ -436,6 +436,77 @@ function Set-GPUPartition {
     }
 }
 
+function Get-DriverFiles {
+    param([Object]$GPU)
+    
+    Write-Box "ANALYZING GPU DRIVERS" "-"
+    Write-Log "GPU: $($GPU.DeviceName)" "INFO"
+    Write-Log "Provider: $($GPU.DriverProviderName)" "INFO"
+    Write-Log "Version: $($GPU.DriverVersion)" "INFO"
+    Write-Host ""
+    
+    $hostname = $ENV:COMPUTERNAME
+    $GPUName = $GPU.DeviceName
+    $GPUServiceName = $GPU.Service
+    
+    Show-Spinner "Querying WMI for driver files..." 2
+    
+    # Get all drivers for this GPU
+    $Drivers = Get-WmiObject Win32_PNPSignedDriver | Where-Object {$_.DeviceName -eq "$GPUName"}
+    
+    $DriverFiles = @()
+    $DriverStoreFolders = @{}
+    
+    foreach ($d in $Drivers) {
+        $ModifiedDeviceID = $d.DeviceID -replace "\\", "\\\\"
+        $Antecedent = "\\\\" + $hostname + "\\ROOT\\cimv2:Win32_PNPSignedDriver.DeviceID=""$ModifiedDeviceID"""
+        
+        # Get all files associated with this driver
+        $AssociatedFiles = Get-WmiObject Win32_PNPSignedDriverCIMDataFile | Where-Object {$_.Antecedent -eq $Antecedent}
+        
+        foreach ($file in $AssociatedFiles) {
+            $path = $file.Dependent.Split("=")[1] -replace '\\\\', '\'
+            $path = $path.Substring(1, $path.Length - 2)
+            
+            if (Test-Path $path) {
+                # Check if file is in DriverStore
+                if ($path -like "C:\Windows\System32\DriverStore\*") {
+                    # Extract the driver folder (first 6 path components)
+                    $DriverDir = $path.split('\')[0..5] -join('\')
+                    
+                    if (!$DriverStoreFolders.ContainsKey($DriverDir)) {
+                        $DriverStoreFolders[$DriverDir] = $true
+                    }
+                } else {
+                    # Regular file outside DriverStore
+                    $DriverFiles += [PSCustomObject]@{
+                        FileName = Split-Path -Leaf $path
+                        FullPath = $path
+                        DestPath = $path.Replace("C:", "")
+                    }
+                }
+            }
+        }
+    }
+    
+    # Also get the GPU service driver directory
+    $servicePath = (Get-WmiObject Win32_SystemDriver | Where-Object {$_.Name -eq "$GPUServiceName"}).Pathname
+    if ($servicePath) {
+        $ServiceDriverDir = $servicePath.split('\')[0..5] -join('\')
+        if (!$DriverStoreFolders.ContainsKey($ServiceDriverDir)) {
+            $DriverStoreFolders[$ServiceDriverDir] = $true
+        }
+    }
+    
+    Write-Log "Found $($DriverFiles.Count) individual files + $($DriverStoreFolders.Count) DriverStore folder(s)" "SUCCESS"
+    Write-Host ""
+    
+    return @{
+        Files = $DriverFiles
+        StoreFolders = @($DriverStoreFolders.Keys)
+    }
+}
+
 function Install-GPUDrivers {
     param([string]$VMName)
     
@@ -478,32 +549,38 @@ function Install-GPUDrivers {
         
         Show-Spinner "Preparing VM disk..." 1
         
-        # Remove old HostDriverStore folder on VM before copy
-        $hostDriverPath = "$mp\Windows\System32\HostDriverStore\FileRepository"
-        if (Test-Path $hostDriverPath) {
-            Remove-Item $hostDriverPath -Recurse -Force -EA SilentlyContinue
-        }
+        # Create HostDriverStore directory
+        $hostDriverStorePath = "$mp\Windows\System32\HostDriverStore"
+        New-Item -Path $hostDriverStorePath -ItemType Directory -Force -EA SilentlyContinue | Out-Null
         
-        # Copy entire DriverStore from host to HostDriverStore on VM
-        $hostDriverStoreSource = "C:\Windows\System32\DriverStore\FileRepository"
-        Write-Log "Copying entire DriverStore repository..." "INFO"
-        Copy-Item -Path $hostDriverStoreSource -Destination $hostDriverPath -Recurse -Force -EA Stop
+        Write-Log "Copying $($driverData.StoreFolders.Count) DriverStore folders..." "INFO"
+        Write-Host ""
         
-        # Copy individual files from INF parsing locations to their corresponding directories on VM
-        foreach ($file in $driverData.Files) {
-            $destPath = ""
-            
-            if ($file.DestType -eq "System32") {
-                $destPath = "$mp\Windows\System32"
-            } elseif ($file.DestType -eq "SysWow64") {
-                $destPath = "$mp\Windows\SysWow64"
-            }
-            
-            if (!$destPath) { continue }
-            
-            New-Item -Path $destPath -ItemType Directory -Force -EA SilentlyContinue | Out-Null
+        # Copy DriverStore folders
+        foreach ($storeFolder in $driverData.StoreFolders) {
+            $folderName = Split-Path -Leaf $storeFolder
+            $relativePath = $storeFolder.Replace("C:\Windows\System32\DriverStore\", "")
+            $destFolder = Join-Path $hostDriverStorePath $relativePath
             
             try {
+                Copy-Item -Path $storeFolder -Destination $destFolder -Recurse -Force -EA Stop
+                $fileCount = @(Get-ChildItem -Path $destFolder -Recurse -File).Count
+                Write-Log "+ $folderName ($fileCount files)" "SUCCESS"
+            } catch {
+                Write-Log "! $folderName`: $_" "WARN"
+            }
+        }
+        
+        Write-Host ""
+        Write-Log "Copying $($driverData.Files.Count) individual files..." "INFO"
+        
+        # Copy individual files to their exact locations
+        foreach ($file in $driverData.Files) {
+            $destPath = "$mp$($file.DestPath)"
+            $destDir = Split-Path -Parent $destPath
+            
+            try {
+                New-Item -Path $destDir -ItemType Directory -Force -EA SilentlyContinue | Out-Null
                 Copy-Item -Path $file.FullPath -Destination $destPath -Force -EA Stop
                 Write-Log "+ $($file.FileName)" "SUCCESS"
             } catch {
@@ -513,7 +590,7 @@ function Install-GPUDrivers {
         
         Write-Host ""
         Write-Box "DRIVER INJECTION COMPLETE" "-"
-        Write-Log "Copied entire DriverStore and individual driver files to $VMName" "SUCCESS"
+        Write-Log "Injected $($driverData.Files.Count) files + $($driverData.StoreFolders.Count) folders to $VMName" "SUCCESS"
         Write-Host ""
         return $true
     } catch {
