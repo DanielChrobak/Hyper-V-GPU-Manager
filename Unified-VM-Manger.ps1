@@ -478,14 +478,18 @@ function Install-GPUDrivers {
         
         Show-Spinner "Preparing VM disk..." 1
         
-        $oldHostDriverPath = "$mp\Windows\System32\HostDriverStore\FileRepository"
-        if (Test-Path $oldHostDriverPath) {
-            Remove-Item $oldHostDriverPath -Recurse -Force -EA SilentlyContinue
+        # Remove old HostDriverStore folder on VM before copy
+        $hostDriverPath = "$mp\Windows\System32\HostDriverStore\FileRepository"
+        if (Test-Path $hostDriverPath) {
+            Remove-Item $hostDriverPath -Recurse -Force -EA SilentlyContinue
         }
         
-        Write-Log "Injecting $($driverData.Files.Count) files + $($driverData.StoreFolders.Count) driver store folder(s)..." "INFO"
-        Write-Host ""
+        # Copy entire DriverStore from host to HostDriverStore on VM
+        $hostDriverStoreSource = "C:\Windows\System32\DriverStore\FileRepository"
+        Write-Log "Copying entire DriverStore repository..." "INFO"
+        Copy-Item -Path $hostDriverStoreSource -Destination $hostDriverPath -Recurse -Force -EA Stop
         
+        # Copy individual files from INF parsing locations to their corresponding directories on VM
         foreach ($file in $driverData.Files) {
             $destPath = ""
             
@@ -507,25 +511,9 @@ function Install-GPUDrivers {
             }
         }
         
-        $hostDriverPath = "$mp\Windows\System32\HostDriverStore\FileRepository"
-        New-Item -Path $hostDriverPath -ItemType Directory -Force -EA SilentlyContinue | Out-Null
-        
-        foreach ($storeFolder in $driverData.StoreFolders) {
-            $folderName = Split-Path -Leaf $storeFolder
-            $destFolder = Join-Path $hostDriverPath $folderName
-            
-            try {
-                Copy-Item -Path $storeFolder -Destination $destFolder -Recurse -Force -EA Stop
-                $fileCount = @(Get-ChildItem -Path $destFolder -Recurse -File).Count
-                Write-Log "+ $folderName ($fileCount files)" "SUCCESS"
-            } catch {
-                Write-Log "! $folderName`: $_" "WARN"
-            }
-        }
-        
         Write-Host ""
         Write-Box "DRIVER INJECTION COMPLETE" "-"
-        Write-Log "Injected files and $($driverData.StoreFolders.Count) driver folders to $VMName" "SUCCESS"
+        Write-Log "Copied entire DriverStore and individual driver files to $VMName" "SUCCESS"
         Write-Host ""
         return $true
     } catch {
