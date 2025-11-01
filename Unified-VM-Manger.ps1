@@ -255,7 +255,11 @@ function Get-DriverFiles {
     
     Show-Spinner "Scanning DriverStore for GPU folders..." 2
     $driverStorePath = "C:\Windows\System32\DriverStore\FileRepository"
-    $allStoreFolders = Get-ChildItem -Path $driverStorePath -Directory -EA SilentlyContinue | Where-Object { $_.Name -like "nv_dispi.inf_amd64*" }
+    
+    # Support for both NVIDIA (nv_dispi) and Intel (vrd_dispi) and other vendors
+    $allStoreFolders = Get-ChildItem -Path $driverStorePath -Directory -EA SilentlyContinue | Where-Object { 
+        $_.Name -like "*dispi.inf_amd64*" -or $_.Name -like "vrd*" -or $_.Name -like "igdlh*" -or $_.Name -like "iigd*"
+    }
     
     foreach ($folder in $allStoreFolders) {
         if (-not ($driverStoreFolders -contains $folder.FullName)) {
