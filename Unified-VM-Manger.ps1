@@ -507,6 +507,143 @@ function Get-DriverFiles {
     }
 }
 
+function Get-DriverFiles {
+    param([Object]$GPU)
+    
+    Write-Box "ANALYZING GPU DRIVERS" "-"
+    Write-Log "GPU: $($GPU.DeviceName)" "INFO"
+    Write-Log "Provider: $($GPU.DriverProviderName)" "INFO"
+    Write-Log "Version: $($GPU.DriverVersion)" "INFO"
+    Write-Host ""
+    
+    # Step 1: Find the INF file from registry
+    Show-Spinner "Finding INF file from registry..." 1
+    
+    $registryPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    $driverSubkeys = Get-ChildItem -Path $registryPath -EA SilentlyContinue
+    
+    $infFileName = $null
+    $foundInRegistry = $false
+    
+    foreach ($subkey in $driverSubkeys) {
+        $props = Get-ItemProperty -Path $subkey.PSPath -EA SilentlyContinue
+        
+        if ($props.MatchingDeviceId) {
+            $deviceIdFromReg = $props.MatchingDeviceId
+            
+            if ($GPU.DeviceID -like "*$deviceIdFromReg*" -or $deviceIdFromReg -like "*$($GPU.DeviceID)*") {
+                $infFileName = $props.InfPath
+                Write-Log "Found INF: $infFileName" "SUCCESS"
+                $foundInRegistry = $true
+                break
+            }
+        }
+    }
+    
+    if (-not $foundInRegistry) {
+        Write-Log "Could not find GPU in registry" "ERROR"
+        return $null
+    }
+    
+    # Step 2: Read the INF file
+    $infFilePath = "C:\Windows\INF\$infFileName"
+    
+    if (-not (Test-Path $infFilePath)) {
+        Write-Log "INF file not found: $infFilePath" "ERROR"
+        return $null
+    }
+    
+    Show-Spinner "Reading INF file..." 1
+    $infContent = Get-Content $infFilePath -Raw
+    
+    # Step 3: Extract file references from INF
+    Show-Spinner "Parsing INF for file references..." 1
+    
+    $filePatterns = @(
+        '[\w\-\.]+\.sys'
+        '[\w\-\.]+\.dll'
+        '[\w\-\.]+\.exe'
+        '[\w\-\.]+\.cat'
+        '[\w\-\.]+\.inf'
+        '[\w\-\.]+\.bin'
+        '[\w\-\.]+\.vp'
+        '[\w\-\.]+\.cpa'
+    )
+    
+    $referencedFiles = @()
+    
+    foreach ($pattern in $filePatterns) {
+        $matches = [regex]::Matches($infContent, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        
+        foreach ($match in $matches) {
+            if ($match.Value -and -not ($referencedFiles -contains $match.Value)) {
+                $referencedFiles += $match.Value
+            }
+        }
+    }
+    
+    Write-Log "Found $($referencedFiles.Count) file references in INF" "SUCCESS"
+    Write-Host ""
+    
+    # Step 4: Search for these files in system
+    Show-Spinner "Locating files in system..." 2
+    
+    $foundFiles = @()
+    $driverStoreFolders = @()
+    
+    $searchPaths = @(
+        @{Path = "C:\Windows\System32\DriverStore\FileRepository"; Type = "DriverStore"; Recurse = $true}
+        @{Path = "C:\Windows\System32"; Type = "System32"; Recurse = $false}
+        @{Path = "C:\Windows\SysWow64"; Type = "SysWow64"; Recurse = $false}
+    )
+    
+    foreach ($fileName in $referencedFiles) {
+        $found = $false
+        
+        foreach ($searchPath in $searchPaths) {
+            if ($found) { break }
+            
+            $searchArgs = @{
+                Path = $searchPath.Path
+                Filter = $fileName
+                EA = 'SilentlyContinue'
+            }
+            
+            if ($searchPath.Recurse) {
+                $searchArgs['Recurse'] = $true
+            }
+            
+            $result = Get-ChildItem @searchArgs | Select-Object -First 1
+            
+            if ($result) {
+                $found = $true
+                
+                if ($searchPath.Type -eq "DriverStore") {
+                    $folderPath = $result.DirectoryName
+                    
+                    if ($folderPath -notin $driverStoreFolders) {
+                        $driverStoreFolders += $folderPath
+                    }
+                } else {
+                    $foundFiles += [PSCustomObject]@{
+                        FileName = $fileName
+                        FullPath = $result.FullName
+                        DestPath = $result.FullName.Replace("C:", "")
+                    }
+                }
+            }
+        }
+    }
+    
+    Write-Log "Located $($foundFiles.Count) system files + $($driverStoreFolders.Count) DriverStore folder(s)" "SUCCESS"
+    Write-Host ""
+    
+    return @{
+        Files = $foundFiles
+        StoreFolders = $driverStoreFolders
+    }
+}
+
 function Install-GPUDrivers {
     param([string]$VMName)
     
@@ -549,32 +686,31 @@ function Install-GPUDrivers {
         
         Show-Spinner "Preparing VM disk..." 1
         
-        # Create HostDriverStore directory
-        $hostDriverStorePath = "$mp\Windows\System32\HostDriverStore"
+        # Create HostDriverStore directory structure
+        $hostDriverStorePath = "$mp\Windows\System32\HostDriverStore\FileRepository"
         New-Item -Path $hostDriverStorePath -ItemType Directory -Force -EA SilentlyContinue | Out-Null
         
         Write-Log "Copying $($driverData.StoreFolders.Count) DriverStore folders..." "INFO"
         Write-Host ""
         
-        # Copy DriverStore folders
+        # Copy DriverStore folders to HostDriverStore
         foreach ($storeFolder in $driverData.StoreFolders) {
             $folderName = Split-Path -Leaf $storeFolder
-            $relativePath = $storeFolder.Replace("C:\Windows\System32\DriverStore\", "")
-            $destFolder = Join-Path $hostDriverStorePath $relativePath
+            $destFolder = Join-Path $hostDriverStorePath $folderName
             
             try {
                 Copy-Item -Path $storeFolder -Destination $destFolder -Recurse -Force -EA Stop
-                $fileCount = @(Get-ChildItem -Path $destFolder -Recurse -File).Count
+                $fileCount = @(Get-ChildItem -Path $destFolder -Recurse -File -EA SilentlyContinue).Count
                 Write-Log "+ $folderName ($fileCount files)" "SUCCESS"
             } catch {
-                Write-Log "! $folderName`: $_" "WARN"
+                Write-Log "! ${folderName}: $_" "WARN"
             }
         }
         
         Write-Host ""
-        Write-Log "Copying $($driverData.Files.Count) individual files..." "INFO"
+        Write-Log "Copying $($driverData.Files.Count) system files..." "INFO"
         
-        # Copy individual files to their exact locations
+        # Copy individual system files to their exact locations
         foreach ($file in $driverData.Files) {
             $destPath = "$mp$($file.DestPath)"
             $destDir = Split-Path -Parent $destPath
