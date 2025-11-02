@@ -561,7 +561,11 @@ function Initialize-VM {
     }
     
     # Initialize Virtual Switch right before VM creation (after ISO selection)
-    Initialize-VirtualSwitch
+    $switchResult = Initialize-VirtualSwitch
+    if (-not $switchResult) {
+        Write-Log "Virtual switch setup failed" "ERROR"
+        return $null
+    }
     Write-Host ""
     
     try {
@@ -609,7 +613,6 @@ function Initialize-VM {
         return $null
     }
 }
-
 
 function Set-GPUPartition {
     param([string]$VMName, [int]$Percentage = 0)
@@ -874,10 +877,12 @@ function Invoke-CompleteSetup {
     
     # Get GPU allocation percentage
     Write-Host ""
-    $gpuPercent = [int](Read-Host "  GPU Allocation % (default: 50)")
-    if (!$gpuPercent) { $gpuPercent = 50 }
+    $gpuPercent = Read-Host "  GPU Allocation % (default: 50)"
+    if (!$gpuPercent -or $gpuPercent -eq "") { $gpuPercent = 50 }
+    $gpuPercent = [int]$gpuPercent
     
-    if (!(Set-GPUPartition -VMName $vmName -Percentage $gpuPercent)) {
+    $gpuResult = Set-GPUPartition -VMName $vmName -Percentage $gpuPercent
+    if (!$gpuResult) {
         Write-Log "GPU config failed" "ERROR"
         return
     }
