@@ -46,14 +46,14 @@ System restart required after enabling Hyper-V.
 Verify GPU drivers are installed:
 
 ```powershell
-PS> Get-WmiObject Win32_VideoController | Where-Object { $_.Name -notlike "*Microsoft*" } | Select-Object Name, DriverVersion, AdapterRAM
+PS> Get-WmiObject Win32_VideoController | Where-Object { $_.Name -notlike "*Microsoft*" } | Select-Object Name, DriverVersion
 
-Name             DriverVersion AdapterRAM
-----             -------------- ----------
-NVIDIA RTX 4090  551.78         24576 MB
+Name                    DriverVersion
+----                    ---------
+NVIDIA GeForce RTX 4090 32.0.15.8129
 ```
 
-For NVIDIA GPUs specifically:
+For NVIDIA GPUs, verify with nvidia-smi:
 
 ```powershell
 PS> nvidia-smi
@@ -86,17 +86,17 @@ The script automatically requests administrator elevation if not already running
 
 ### GPU Device Detection
 
-The tool discovers GPUs through Windows Management Instrumentation (WMI), accessing the `Win32_VideoController` class:
+The tool discovers GPUs through Windows Management Instrumentation (WMI), accessing the `Win32_PnPSignedDriver` class filtered by Display devices:
 
 ```powershell
 # GPU device enumeration
-$gpus = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue | 
-    Where-Object { $_.Name -notlike "*Microsoft*" -and $_.Name -notlike "*Remote*" }
+$gpuDrivers = Get-WmiObject Win32_PnPSignedDriver -ErrorAction SilentlyContinue | 
+    Where-Object { $_.DeviceClass -eq "Display" }
 
-foreach ($gpu in $gpus) {
-    Write-Host "GPU: $($gpu.Name)"
+foreach ($gpu in $gpuDrivers) {
+    Write-Host "GPU: $($gpu.DeviceName)"
     Write-Host "Driver Version: $($gpu.DriverVersion)"
-    Write-Host "VRAM: $(($gpu.AdapterRAM) / 1GB) GB"
+    Write-Host "Provider: $($gpu.DriverProviderName)"
 }
 ```
 
@@ -114,7 +114,7 @@ $registryPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11c
 # HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000
 #   ├── DriverDesc: "NVIDIA RTX 4090"
 #   ├── MatchingDeviceId: "PCI\VEN_10DE&DEV_2684&SUBSYS_12381462"
-#   ├── DriverVersion: "551.78"
+#   ├── DriverVersion: "32.0.15.8129"
 #   └── InfPath: "oem123.inf"
 ```
 
@@ -290,9 +290,6 @@ foreach ($storeFolder in $driverData.StoreFolders) {
     Copy-Item -Path $storeFolder `
               -Destination $destFolder `
               -Recurse -Force
-    
-    # Example: C:\Windows\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_12345678\
-    # is copied to: $mountPoint\Windows\System32\HostDriverStore\FileRepository\nv_dispi.inf_amd64_12345678\
 }
 ```
 
@@ -311,10 +308,6 @@ foreach ($file in $driverData.Files) {
     Copy-Item -Path $file.FullPath `
               -Destination $destPath `
               -Force
-    
-    # Example: 
-    # Source: C:\Windows\System32\nvapi64.dll
-    # Target: $mountPoint\Windows\System32\nvapi64.dll
 }
 ```
 
@@ -497,7 +490,7 @@ SELECT VIRTUAL MACHINE
 
 ### Inject GPU Drivers (Auto-Detect)
 
-Automatically detects GPU drivers from host system and injects them into selected VM disk image.
+Automatically detects GPU drivers from host system and injects them into selected VM disk image. Uses vendor-specific tools and universal registry detection to find accurate driver information.
 
 ```powershell
 PS> (Select "Inject GPU Drivers (Auto-Detect)" from menu)
@@ -510,10 +503,10 @@ PS> (Arrow keys to select target VM)
 SELECT GPU DEVICE
 
   [1] NVIDIA GeForce RTX 4090
-      Provider: NVIDIA | Version: 551.78
+      Provider: NVIDIA | Version: 32.0.15.8129
 
   [2] NVIDIA GeForce RTX 4080 Super
-      Provider: NVIDIA | Version: 551.78
+      Provider: NVIDIA | Version: 32.0.15.8129
 
   [3] AMD Radeon RX 7900 XTX
       Provider: AMD | Version: 24.10.1
@@ -528,7 +521,7 @@ Enter GPU number (1-3): 1
 
   [14:24:30] > GPU: NVIDIA GeForce RTX 4090
   [14:24:30] > Provider: NVIDIA
-  [14:24:30] > Version: 551.78
+  [14:24:30] > Version: 32.0.15.8129
 
   [14:24:30] > Finding INF file from registry...
   [14:24:31] + Found INF: oem123.inf
@@ -562,11 +555,11 @@ When multiple GPUs are present, the script displays all available devices:
 
 ```powershell
 # Host with 2 NVIDIA GPUs
-$gpus = Get-WmiObject Win32_VideoController | Where-Object { $_.Name -notlike "*Microsoft*" }
+$gpus = Get-WmiObject Win32_PnPSignedDriver | Where-Object { $_.DeviceClass -eq "Display" }
 
 # Result:
-# [1] NVIDIA GeForce RTX 4090       (551.78)
-# [2] NVIDIA GeForce RTX 4080 Super (551.78)
+# [1] NVIDIA GeForce RTX 4090       (32.0.15.8129)
+# [2] NVIDIA GeForce RTX 4080 Super (32.0.15.8129)
 
 # User selects which GPU's drivers to inject
 ```
@@ -596,7 +589,7 @@ PS> ISO Path: C:\ISOs\Windows11Pro.iso
 PS> GPU Allocation % (default: 50): 50
 ```
 
-This combines Create New VM, Configure GPU Partition, and displays next steps.
+This combines Create New VM and Configure GPU Partition.
 
 **Typical workflow after Complete Setup:**
 
@@ -624,7 +617,7 @@ Process is identical to "Inject GPU Drivers (Auto-Detect)" but performed on alre
 
 ### List VMs & GPU Info
 
-Displays comprehensive inventory of all VMs and host GPU information.
+Displays comprehensive inventory of all VMs and host GPU information with accurate VRAM detection using vendor-specific tools.
 
 ```powershell
 PS> (Select "List VMs & GPU Info" from menu)
@@ -655,17 +648,32 @@ PS> (Select "List VMs & GPU Info" from menu)
 ================================================================================
 
   GPU: NVIDIA GeForce RTX 4090
-  Driver Version: 551.78
+  Driver Version: 32.0.15.8129
   Driver Date: 11/01/2024
-  VRAM: 24.0 GB
+  VRAM: 24.0 GB (nvidia-smi)
   Status: OK
 
-  GPU: NVIDIA GeForce RTX 4080 Super
-  Driver Version: 551.78
-  Driver Date: 11/01/2024
-  VRAM: 16.0 GB
+  GPU: AMD Radeon RX 7900 XTX
+  Driver Version: 24.10.1
+  Driver Date: 10/15/2024
+  VRAM: 24.0 GB (rocm-smi)
+  Status: OK
+
+  GPU: Intel Arc A770
+  Driver Version: 31.0.101.5272
+  Driver Date: 10/20/2024
+  VRAM: 8.0 GB (registry)
   Status: OK
 ```
+
+**VRAM Detection Methods:**
+
+The script uses vendor-specific tools for accurate VRAM reporting:
+
+- **NVIDIA:** `nvidia-smi --query-gpu=memory.total` (most accurate)
+- **AMD:** `rocm-smi --showmeminfo` (when ROCm installed)
+- **Intel Arc/iGPU:** Windows Registry `HardwareInformation.qxvram` (always available)
+- **Fallback:** WMI `AdapterRAM` (unreliable for >4GB GPUs, marked as "WMI (unreliable)")
 
 ### Copy VM Apps to Downloads
 
@@ -959,18 +967,22 @@ Dev-VM: No GPU partition
 ML-VM: 75% GPU
 ```
 
-### List All Host GPUs
+### List All Host GPUs with VRAM
 
 ```powershell
-# Enumerate all GPUs
-$gpus = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue | 
-    Where-Object { $_.Name -notlike "*Microsoft*" -and $_.Name -notlike "*Remote*" }
+# Enumerate all GPUs with accurate VRAM detection
+$gpus = Get-WmiObject Win32_PnPSignedDriver | Where-Object { $_.DeviceClass -eq "Display" }
 
 foreach ($gpu in $gpus) {
-    $vramGB = [math]::Round($gpu.AdapterRAM / 1GB, 2)
-    Write-Host "Name: $($gpu.Name)"
+    Write-Host "Name: $($gpu.DeviceName)"
     Write-Host "Driver: $($gpu.DriverVersion)"
-    Write-Host "VRAM: $vramGB GB"
+    Write-Host "Provider: $($gpu.DriverProviderName)"
+    
+    # Try NVIDIA
+    if ($gpu.DeviceName -like "*NVIDIA*") {
+        $vram = nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
+        if ($vram) { Write-Host "VRAM: $([int]$vram / 1024) GB (nvidia-smi)" }
+    }
     Write-Host "---"
 }
 ```
@@ -978,12 +990,13 @@ foreach ($gpu in $gpus) {
 **Output:**
 ```
 Name: NVIDIA GeForce RTX 4090
-Driver: 551.78
-VRAM: 24.0 GB
+Driver: 32.0.15.8129
+Provider: NVIDIA
+VRAM: 24 GB (nvidia-smi)
 ---
-Name: NVIDIA GeForce RTX 4080 Super
-Driver: 551.78
-VRAM: 16.0 GB
+Name: AMD Radeon RX 7900 XTX
+Driver: 24.10.1
+Provider: AMD
 ---
 ```
 
