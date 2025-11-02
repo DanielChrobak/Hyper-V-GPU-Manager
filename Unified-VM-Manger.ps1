@@ -39,7 +39,7 @@ function Show-Banner {
     Clear-Host
     Write-Host "`n  $('-' * 78)" -ForegroundColor Magenta
     Write-Host "      +===============================================================+" -ForegroundColor Magenta
-    Write-Host "      |          *  GPU VIRTUALIZATION MANAGER  v3.2  *               |" -ForegroundColor Magenta
+    Write-Host "      |          *  GPU VIRTUALIZATION MANAGER  v4.0  *               |" -ForegroundColor Magenta
     Write-Host "      |    Smart Driver Detection & GPU Partition Support             |" -ForegroundColor Magenta
     Write-Host "      +===============================================================+" -ForegroundColor Magenta
     Write-Host "  $('-' * 78)`n" -ForegroundColor Magenta
@@ -931,4 +931,5 @@ while ($true) {
     # Move to next menu item for convenience
     $selectedIndex = ($selectedIndex + 1) % $menuItems.Count
 }
+
 
