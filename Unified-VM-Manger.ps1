@@ -1,5 +1,5 @@
 # ==============================================================================
-#  GPU Virtualization & Partitioning Tool
+#  GPU Virtualization & Partitioning Tool v3.2
 # ==============================================================================
 
 
@@ -39,7 +39,7 @@ function Show-Banner {
     Clear-Host
     Write-Host "`n  $('-' * 78)" -ForegroundColor Magenta
     Write-Host "      +===============================================================+" -ForegroundColor Magenta
-    Write-Host "      |          *  GPU VIRTUALIZATION MANAGER  *                     |" -ForegroundColor Magenta
+    Write-Host "      |          *  GPU VIRTUALIZATION MANAGER  v3.2  *               |" -ForegroundColor Magenta
     Write-Host "      |    Smart Driver Detection & GPU Partition Support             |" -ForegroundColor Magenta
     Write-Host "      +===============================================================+" -ForegroundColor Magenta
     Write-Host "  $('-' * 78)`n" -ForegroundColor Magenta
@@ -874,10 +874,75 @@ function Show-SystemInfo {
             Write-Host "  Driver Version: $($gpu.DriverVersion)" -ForegroundColor Green
             Write-Host "  Driver Date: $($gpu.DriverDate)" -ForegroundColor Green
             
-            # Display adapter RAM if available
-            if ($gpu.AdapterRAM -and $gpu.AdapterRAM -gt 0) {
-                $vramGB = [math]::Round($gpu.AdapterRAM / 1GB, 2)
-                Write-Host "  VRAM: $vramGB GB" -ForegroundColor Green
+            # Get VRAM using vendor-specific tools or WMI fallback
+            $vramGB = $null
+            $vramSource = "unknown"
+            
+            # NVIDIA: Use nvidia-smi
+            if ($gpu.Name -like "*NVIDIA*") {
+                try {
+                    $nvidiaSmi = nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
+                    if ($nvidiaSmi -and $nvidiaSmi -match '^\d+$') {
+                        $vramGB = [math]::Round([int]$nvidiaSmi / 1024, 2)
+                        $vramSource = "nvidia-smi"
+                    }
+                } catch {
+                    # nvidia-smi failed or not installed
+                }
+            }
+            
+            # AMD: Use rocm-smi
+            elseif ($gpu.Name -like "*AMD*" -or $gpu.Name -like "*Radeon*") {
+                try {
+                    $rocmOutput = rocm-smi --showmeminfo --showid 2>$null
+                    if ($rocmOutput) {
+                        # rocm-smi output format: "GPU Memory: XXXX(MB) / YYYY(MB)"
+                        $match = $rocmOutput | Select-String "GPU Memory:" | Select-Object -First 1
+                        if ($match) {
+                            # Extract total memory (second number)
+                            $memMatch = [regex]::Matches($match.Line, '\d+')
+                            if ($memMatch.Count -ge 2) {
+                                $totalMem = [int]$memMatch[1].Value
+                                $vramGB = [math]::Round($totalMem / 1024, 2)
+                                $vramSource = "rocm-smi"
+                            }
+                        }
+                    }
+                } catch {
+                    # rocm-smi not available
+                }
+            }
+            
+            # Intel Arc/iGPU: Check registry
+            elseif ($gpu.Name -like "*Intel*" -or $gpu.Name -like "*Arc*") {
+                try {
+                    # Registry path for Intel GPU VRAM (qxvram is in bytes)
+                    $intelReg = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\*" `
+                        -Name "HardwareInformation.qxvram" -EA SilentlyContinue | 
+                        Where-Object { $_."HardwareInformation.qxvram" } |
+                        Select-Object -First 1
+                    
+                    if ($intelReg -and $intelReg."HardwareInformation.qxvram") {
+                        $vramBytes = [int]$intelReg."HardwareInformation.qxvram"
+                        $vramGB = [math]::Round($vramBytes / 1GB, 2)
+                        $vramSource = "registry"
+                    }
+                } catch {
+                    # Registry query failed
+                }
+            }
+            
+            # Fallback to WMI if vendor tool failed
+            if ($null -eq $vramGB -or $vramGB -eq 0) {
+                if ($gpu.AdapterRAM -and $gpu.AdapterRAM -gt 0) {
+                    $vramGB = [math]::Round($gpu.AdapterRAM / 1GB, 2)
+                    $vramSource = "WMI (unreliable)"
+                    Write-Host "  VRAM: $vramGB GB ($vramSource - may be inaccurate)" -ForegroundColor Yellow
+                } else {
+                    Write-Host "  VRAM: Unknown (no VRAM data available)" -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "  VRAM: $vramGB GB ($vramSource)" -ForegroundColor Green
             }
             
             # Display status
@@ -931,6 +996,3 @@ while ($true) {
     # Move to next menu item for convenience
     $selectedIndex = ($selectedIndex + 1) % $menuItems.Count
 }
-
-
-
