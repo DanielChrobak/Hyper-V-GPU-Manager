@@ -455,6 +455,83 @@ function Get-VMConfig {
 }
 
 
+function Select-NetworkAdapter {
+    Write-Box "SELECT NETWORK ADAPTER"
+    
+    # Get all physical network adapters (exclude virtual/loopback adapters)
+    $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" -and $_.InterfaceType -ne "Software Loopback" } | Sort-Object Name
+    
+    if ($adapters.Count -eq 0) {
+        Write-Log "No active network adapters found" "ERROR"
+        return $null
+    }
+    
+    $adapterList = @()
+    $index = 1
+    
+    Write-Host ""
+    foreach ($adapter in $adapters) {
+        $adapterList += $adapter
+        Write-Host "  [$index] $($adapter.Name)" -ForegroundColor Green
+        Write-Host "      Status: $($adapter.Status) | Description: $($adapter.InterfaceDescription)" -ForegroundColor DarkGray
+        $index++
+    }
+    Write-Host ""
+    
+    # Get user selection
+    do {
+        $selection = Read-Host "  Enter adapter number (1-$($adapterList.Count))"
+        $selectionNum = [int]$selection
+    } while ($selectionNum -lt 1 -or $selectionNum -gt $adapterList.Count)
+    
+    return $adapterList[$selectionNum - 1]
+}
+
+
+function Initialize-VirtualSwitch {
+    # Check if an external virtual switch already exists
+    $externalSwitch = Get-VMSwitch -EA SilentlyContinue | Where-Object { $_.SwitchType -eq "External" }
+    
+    if ($externalSwitch) {
+        Write-Log "External virtual switch already exists: $($externalSwitch.Name)" "SUCCESS"
+        return $true
+    }
+    
+    Write-Box "VIRTUAL SWITCH SETUP"
+    Write-Log "No external virtual switch found. Creating one..." "INFO"
+    Write-Host ""
+    
+    # Select network adapter
+    $adapter = Select-NetworkAdapter
+    if (!$adapter) {
+        Write-Log "No network adapter selected" "WARN"
+        return $false
+    }
+    
+    Write-Host ""
+    $switchName = Read-Host "  Virtual Switch Name (default: External)"
+    if (!$switchName) { $switchName = "External" }
+    Write-Host ""
+    
+    try {
+        Show-Spinner "Creating external virtual switch..." 2
+        
+        # Create external virtual switch
+        New-VMSwitch -Name $switchName -NetAdapterName $adapter.Name -AllowManagementOS $true -EA Stop | Out-Null
+        
+        Write-Host ""
+        Write-Box "VIRTUAL SWITCH CREATED: $switchName" "-"
+        Write-Log "Switch Name: $switchName" "SUCCESS"
+        Write-Log "Connected to: $($adapter.Name) ($($adapter.InterfaceDescription))" "SUCCESS"
+        Write-Host ""
+        return $true
+    } catch {
+        Write-Log "Virtual switch creation failed: $_" "ERROR"
+        return $false
+    }
+}
+
+
 # ==============================================================================
 #  VM OPERATIONS
 # ==============================================================================
@@ -482,6 +559,10 @@ function Initialize-VM {
         }
         Remove-Item $vhdPath -Force
     }
+    
+    # Initialize Virtual Switch right before VM creation (after ISO selection)
+    Initialize-VirtualSwitch
+    Write-Host ""
     
     try {
         # Create VM
@@ -784,6 +865,8 @@ function Copy-VMApps {
 function Invoke-CompleteSetup {
     Write-Log "Starting complete setup..." "HEADER"
     
+    Write-Host ""
+    
     # Get VM configuration
     $config = Get-VMConfig
     $vmName = Initialize-VM -Config $config
@@ -820,6 +903,10 @@ function Show-SystemInfo {
         return
     }
     
+    # Get host GPU name for reference
+    $hostGPU = Get-WmiObject Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -notlike "*Microsoft*" -and $_.Name -notlike "*Remote*" } | Select-Object -First 1
+    $hostGPUName = if ($hostGPU) { $hostGPU.Name } else { "No GPU" }
+    
     # Display each VM's information
     foreach ($vm in $vms) {
         # Get VHD size
@@ -836,10 +923,11 @@ function Show-SystemInfo {
             [math]::Round($vm.MemoryStartup / 1GB, 0) 
         }
         
-        # Get GPU allocation
+        # Get GPU allocation with GPU name
         $gpuAdapter = Get-VMGpuPartitionAdapter $vm.Name -EA SilentlyContinue
         $gpu = if ($gpuAdapter) { 
-            "$([math]::Round(($gpuAdapter.MaxPartitionVRAM / 1000000000) * 100, 0))%" 
+            $gpuPercent = [math]::Round(($gpuAdapter.MaxPartitionVRAM / 1000000000) * 100, 0)
+            "$gpuPercent% - $hostGPUName"
         } else { 
             "None" 
         }
@@ -957,6 +1045,7 @@ function Show-SystemInfo {
     
     Read-Host "  Press Enter"
 }
+
 
 # ==============================================================================
 #  MAIN MENU
