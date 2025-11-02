@@ -1,5 +1,5 @@
 # ==============================================================================
-#  GPU Virtualization & Partitioning Tool v3.2
+#  GPU Virtualization & Partitioning Tool v4.0
 # ==============================================================================
 
 
@@ -931,3 +931,4 @@ while ($true) {
     # Move to next menu item for convenience
     $selectedIndex = ($selectedIndex + 1) % $menuItems.Count
 }
+
