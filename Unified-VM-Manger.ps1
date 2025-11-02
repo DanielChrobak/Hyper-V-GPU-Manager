@@ -1,5 +1,5 @@
 # ==============================================================================
-#  GPU Virtualization & Partitioning Tool v3.2
+#  GPU Virtualization & Partitioning Tool
 # ==============================================================================
 
 
@@ -39,7 +39,7 @@ function Show-Banner {
     Clear-Host
     Write-Host "`n  $('-' * 78)" -ForegroundColor Magenta
     Write-Host "      +===============================================================+" -ForegroundColor Magenta
-    Write-Host "      |          *  GPU VIRTUALIZATION MANAGER  v3.2  *               |" -ForegroundColor Magenta
+    Write-Host "      |          *  GPU VIRTUALIZATION MANAGER  *                     |" -ForegroundColor Magenta
     Write-Host "      |    Smart Driver Detection & GPU Partition Support             |" -ForegroundColor Magenta
     Write-Host "      +===============================================================+" -ForegroundColor Magenta
     Write-Host "  $('-' * 78)`n" -ForegroundColor Magenta
