@@ -43,7 +43,7 @@ function Show-SpinnerWithCondition {
     for ($i = 0; $i -lt $TimeoutSeconds; $i++) {
         if (& $Condition) {
             $finalMsg = if ($SuccessMessage) { $SuccessMessage } else { $Message }
-            Write-Host "`r  + $finalMsg            " -ForegroundColor Green
+            Write-Host "`r  + $finalMsg             " -ForegroundColor Green
             return $true
         }
         Write-Host "`r  $($spinner[$spinnerIndex % 4]) $Message ($i sec)" -ForegroundColor Cyan -NoNewline
@@ -80,7 +80,7 @@ function Select-Menu {
     param([string[]]$Items, [string]$Title = "MENU")
     $selected = 0; $last = -1
     Show-Banner
-    Write-Host "  > $Title`n  |  Use UP/DOWN arrows and ENTER to select`n  |" -ForegroundColor Cyan
+    Write-Host "  > $Title`n  |  Use UP/DOWN arrows, ENTER to select, ESC to cancel`n  |" -ForegroundColor Cyan
     $menuStart = [Console]::CursorTop
     $Items | ForEach-Object { Write-Host "  |     $_" -ForegroundColor White }
     Write-Host "  |`n  >$('=' * 76)`n" -ForegroundColor Cyan
@@ -95,11 +95,16 @@ function Select-Menu {
             $last = $selected
         }
         $key = [Console]::ReadKey($true)
-        if ($key.Key -eq "UpArrow") { $selected = ($selected - 1 + $Items.Count) % $Items.Count }
-        elseif ($key.Key -eq "DownArrow") { $selected = ($selected + 1) % $Items.Count }
-        elseif ($key.Key -eq "Enter") { 
+        if ($key.Key -eq "UpArrow") {
+            $selected = ($selected - 1 + $Items.Count) % $Items.Count
+        } elseif ($key.Key -eq "DownArrow") {
+            $selected = ($selected + 1) % $Items.Count
+        } elseif ($key.Key -eq "Enter") {
             [Console]::SetCursorPosition(0, $menuStart + $Items.Count + 2)
-            return $selected 
+            return $selected
+        } elseif ($key.Key -eq "Escape") {
+            [Console]::SetCursorPosition(0, $menuStart + $Items.Count + 2)
+            return $null
         }
     }
 }
@@ -144,7 +149,7 @@ function Select-VM {
     $menuItems += $vms | ForEach-Object { Format-VMMenuItem $_ }
     $menuItems += "< Cancel >"  # Ensure Cancel is always last and on its own line!
     $selection = Select-Menu -Items $menuItems -Title $Title
-    if ($selection -eq ($menuItems.Count - 1)) { return $null }
+    if ($selection -eq $null -or $selection -eq ($menuItems.Count - 1)) { return $null }
     return $vms[$selection]
 }
 
@@ -153,7 +158,14 @@ function Format-VMMenuItem {
     $ramSource = if ($VM.MemoryAssigned -gt 0) { $VM.MemoryAssigned } else { $VM.MemoryStartup }
     $ram = [math]::Round($ramSource / 1GB, 0)
     $gpuAdapter = Get-VMGpuPartitionAdapter $VM.Name -EA SilentlyContinue
-    $gpu = if ($gpuAdapter) { "$([math]::Round(($gpuAdapter.MaxPartitionVRAM / 1000000000) * 100, 0))%" } else { "None" }
+    $gpu = if ($gpuAdapter) {
+        try {
+            $percent = [math]::Round(($gpuAdapter.MaxPartitionVRAM / 1000000000) * 100, 0)
+            "$percent%"
+        } catch { "?" }
+    } else {
+        "None"
+    }
     return "$($VM.Name) | State: $($VM.State) | RAM: ${ram}GB | CPU: $($VM.ProcessorCount) | GPU: $gpu"
 }
 
@@ -192,7 +204,7 @@ function Test-VMState {
 
 function Mount-VMDisk {
     param([string]$VHDPath)
-    $mountPoint = "C:\\Temp\\VMMount_$(Get-Random)"
+    $mountPoint = "C:\Temp\VMMount_$(Get-Random)"
     $result = Invoke-WithErrorHandling -OperationName "Mount VHD" -ScriptBlock {
         New-Item $mountPoint -ItemType Directory -Force | Out-Null
         Show-Spinner "Mounting virtual disk..." 2
@@ -238,7 +250,7 @@ function Select-GPUDevice {
     for ($i=0; $i -lt $gpuDrivers.Count; $i++) {
         $gpu = $gpuDrivers[$i]
         Write-Host "  [$($i + 1)] $($gpu.DeviceName)" -ForegroundColor Green
-        Write-Host "      Provider: $($gpu.DriverProviderName) | Version: $($gpu.DriverVersion)" -ForegroundColor DarkGray
+        Write-Host "       Provider: $($gpu.DriverProviderName) | Version: $($gpu.DriverVersion)" -ForegroundColor DarkGray
     }
     Write-Host ""
     $maxNum = $gpuDrivers.Count
@@ -336,6 +348,7 @@ function Get-VMConfig {
         @{Name="ML-VM"; RAM=32; CPU=12; Storage=512}
     )
     $choice = Select-Menu -Items $presets -Title "VM CONFIGURATION"
+    if ($choice -eq $null) { return $null }
     if ($choice -lt 3) {
         $preset = $presetData[$choice]; Write-Host ""
         $name = Read-Host "  VM Name (default: $($preset.Name))"
@@ -355,6 +368,10 @@ function Get-VMConfig {
 
 function Initialize-VM {
     param($Config)
+    if ($Config -eq $null) {
+        Write-Log "VM configuration cancelled" "WARN"
+        return $null
+    }
     Write-Box "CREATING VIRTUAL MACHINE"
     Write-Log "VM: $($Config.Name) | RAM: $($Config.RAM)GB | CPU: $($Config.CPU) | Storage: $($Config.Storage)GB" "INFO"; Write-Host ""
     $vhdPath = Join-Path $Config.Path "$($Config.Name).vhdx"
@@ -562,6 +579,10 @@ function Copy-VMApps {
 function Invoke-CompleteSetup {
     Write-Log "Starting complete setup..." "HEADER"; Write-Host ""
     $config = Get-VMConfig
+    if ($config -eq $null) {
+        Write-Log "Setup cancelled" "WARN"
+        return
+    }
     $vmName = Initialize-VM -Config $config
     if (!$vmName) { return }
     Write-Host ""
@@ -598,6 +619,11 @@ function Show-VmInfo {
         Read-Host "  Press Enter"
         return
     }
+    # Header
+    $line = "+{0}+{1}+{2}+{3}+{4}+{5}+" -f ('-'*20),('-'*10),('-'*9),('-'*9),('-'*11),('-'*9)
+    Write-Host "  $line" -ForegroundColor Cyan
+    Write-Host ("  | {0,-18} | {1,-8} | {2,-7} | {3,-7} | {4,-9} | {5,-7} |" -f "VM", "State", "RAM(GB)", "CPU", "Storage", "GPU") -ForegroundColor Cyan
+    Write-Host "  $line" -ForegroundColor Cyan
     $vms | ForEach-Object {
         $vhdSize = 0
         try {
@@ -607,19 +633,19 @@ function Show-VmInfo {
         $ramSource = if ($_.MemoryAssigned -gt 0) { $_.MemoryAssigned } else { $_.MemoryStartup }
         $ram = [math]::Round($ramSource / 1GB, 0)
         $stateColor = if ($_.State -eq "Running") { "Green" } else { "Yellow" }
-        Write-Host "  +$('-' * 76)" -ForegroundColor Cyan
-        Write-Host "  |  VM: " -ForegroundColor Cyan -NoNewline
-        Write-Host $_.Name -ForegroundColor White
-        Write-Host "  |  State: " -ForegroundColor Cyan -NoNewline
-        Write-Host "$($_.State) " -ForegroundColor $stateColor -NoNewline
-        Write-Host "| RAM: " -ForegroundColor Cyan -NoNewline
-        Write-Host "${ram}GB " -ForegroundColor Cyan -NoNewline
-        Write-Host "| CPU: " -ForegroundColor Cyan -NoNewline
-        Write-Host "$($_.ProcessorCount) " -ForegroundColor Yellow -NoNewline
-        Write-Host "| Storage: " -ForegroundColor Cyan -NoNewline
-        Write-Host "${vhdSize}GB " -ForegroundColor Magenta
-        Write-Host "  +$('-' * 76)" -ForegroundColor Cyan
+        $gpuAdapter = Get-VMGpuPartitionAdapter $_.Name -EA SilentlyContinue
+        $gpuPercent = "None"
+        if ($gpuAdapter) {
+            try {
+                $gpuPercent = [math]::Round(($gpuAdapter.MaxPartitionVRAM / 1000000000) * 100, 0)
+                $gpuPercent = "$gpuPercent%"
+            } catch {
+                $gpuPercent = "?"
+            }
+        }
+        Write-Host ("  | {0,-18} | {1,-8} | {2,-7} | {3,-7} | {4,-9} | {5,-7} |" -f $_.Name, $_.State, $ram, $_.ProcessorCount, $vhdSize, $gpuPercent) -ForegroundColor $stateColor
     }
+    Write-Host "  $line" -ForegroundColor Cyan
     Write-Host ""
     Read-Host "  Press Enter"
 }
@@ -704,6 +730,10 @@ $selectedIndex = 0
 
 while ($true) {
     $selectedIndex = Select-Menu -Items $menuItems -Title "MAIN MENU"
+    if ($selectedIndex -eq $null) {
+        Write-Log "Menu cancelled by user (ESC pressed)." "INFO"
+        continue
+    }
     Write-Host ""
     switch ($selectedIndex) {
         0 { Initialize-VM -Config (Get-VMConfig); Read-Host "`n  Press Enter" }
