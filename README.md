@@ -49,7 +49,7 @@ PS> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ### 4. Run the Manager
 
 ```powershell
-PS> .\Unified-VM-Manager.ps1
+PS> .\GPU-PV-Manager.ps1
 ```
 
 The script automatically requests administrator elevation if not already running with elevated privileges.
@@ -405,7 +405,7 @@ Copies application zip files from "VM Apps" folder (in script directory) to VM's
 
 ```
 Script Directory\
-├── Unified-VM-Manager.ps1
+├── GPU-PV-Manager.ps1
 └── VM Apps\
     ├── Sunshine.zip
     ├── VB-Cable.zip
@@ -1108,20 +1108,3 @@ Extensively tested with NVIDIA GPUs; AMD Radeon and Intel Arc driver detection f
 Provided as-is for personal and educational use. No warranty. Use at your own risk.
 
 **Disclaimer:** GPU virtualization depends on compatible hardware and may not work with all GPU models/driver versions. Application compatibility varies - tool automates initial driver setup but cannot prevent per-app issues or missing dependencies. Always backup important data before VM operations.
-
-## Changelog
-
-### Latest Version (Optimized)
-
-**Improvements:**
-- Enhanced error handling with `Invoke-WithErrorHandling` wrapper
-- Conditional spinner with timeout support (`Show-SpinnerWithCondition`)
-- Safe VM state management with `Stop-VMSafe` and `Test-VMState`
-- Validated input system with `Get-ValidatedInput`
-- Improved menu navigation with ESC cancellation support
-- Consistent UI formatting with standardized box borders
-- Optimized code organization with clear regions
-- Better VM selection interface showing state, RAM, CPU, and GPU info
-- Automatic Enhanced Session Mode disabling (required for GPU-PV)
-- Integration Services configuration (Guest Service Interface and VSS disabled)
-- Improved error messages with actionable guidance
