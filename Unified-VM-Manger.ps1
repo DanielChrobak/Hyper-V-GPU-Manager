@@ -1,65 +1,90 @@
-# ==============================================================================
-#  GPU Virtualization & Partitioning Tool
-# ==============================================================================
-
-
-# Request administrator privileges if not already running as admin
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")) {
-    Write-Host "`n  [!] Requesting administrator privileges..." -ForegroundColor Yellow
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
     exit
 }
 
-
-# ==============================================================================
-#  UTILITY FUNCTIONS
-# ==============================================================================
-
+#region Core Logging and UI Helpers
 
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $colors = @{INFO='Cyan'; SUCCESS='Green'; WARN='Yellow'; ERROR='Red'; HEADER='Magenta'}
     $icons = @{INFO='>'; SUCCESS='+'; WARN='!'; ERROR='X'; HEADER='~'}
-    $timestamp = Get-Date -Format "HH:mm:ss"
-    Write-Host "  [$timestamp] $($icons[$Level]) $Message" -ForegroundColor $colors[$Level]
+    Write-Host "  [$((Get-Date).ToString('HH:mm:ss'))] $($icons[$Level]) $Message" -ForegroundColor $colors[$Level]
 }
-
 
 function Write-Box {
     param([string]$Text, [string]$Style = "=", [int]$Width = 80)
-    Write-Host ""
-    Write-Host "  +$($Style * ($Width - 4))+" -ForegroundColor Cyan
+    Write-Host "`n  +$($Style * ($Width - 4))+" -ForegroundColor Cyan
     Write-Host "  |  $($Text.PadRight($Width - 6))|" -ForegroundColor Cyan
     Write-Host "  +$($Style * ($Width - 4))+" -ForegroundColor Cyan
     if ($Style -eq "=") { Write-Host "" }
 }
 
-
 function Show-Banner {
     Clear-Host
-    Write-Host "`n  $('-' * 78)" -ForegroundColor Magenta
-    Write-Host "      +===============================================================+" -ForegroundColor Magenta
-    Write-Host "      |          *  GPU VIRTUALIZATION MANAGER  *                     |" -ForegroundColor Magenta
-    Write-Host "      |    Smart Driver Detection & GPU Partition Support             |" -ForegroundColor Magenta
-    Write-Host "      +===============================================================+" -ForegroundColor Magenta
-    Write-Host "  $('-' * 78)`n" -ForegroundColor Magenta
+    Write-Host "`n  GPU Virtualization Manager" -ForegroundColor Magenta
+    Write-Host "  Manage and partition GPUs for Hyper-V virtual machines`n" -ForegroundColor Magenta
 }
 
+function Show-Spinner {
+    param([string]$Message, [int]$Duration = 2)
+    $spinner = @('|', '/', '-', '\')
+    1..$Duration | ForEach-Object {
+        Write-Host "`r  $($spinner[$_ % 4]) $Message" -ForegroundColor Cyan -NoNewline
+        Start-Sleep -Milliseconds 150
+    }
+    Write-Host "`r  + $Message" -ForegroundColor Green
+}
+
+function Show-SpinnerWithCondition {
+    param([string]$Message, [scriptblock]$Condition, [int]$TimeoutSeconds = 60, [string]$SuccessMessage = $null)
+    $spinner = @('|', '/', '-', '\')
+    $spinnerIndex = 0
+    for ($i = 0; $i -lt $TimeoutSeconds; $i++) {
+        if (& $Condition) {
+            $finalMsg = if ($SuccessMessage) { $SuccessMessage } else { $Message }
+            Write-Host "`r  + $finalMsg            " -ForegroundColor Green
+            return $true
+        }
+        Write-Host "`r  $($spinner[$spinnerIndex % 4]) $Message ($i sec)" -ForegroundColor Cyan -NoNewline
+        Start-Sleep -Milliseconds 500
+        $spinnerIndex++
+    }
+    Write-Host "`r  X $Message - Timeout" -ForegroundColor Red
+    return $false
+}
+
+function Invoke-WithErrorHandling {
+    param(
+        [scriptblock]$ScriptBlock,
+        [string]$OperationName,
+        [string]$SuccessMessage = $null,
+        [scriptblock]$OnError = $null
+    )
+    try {
+        $result = & $ScriptBlock
+        if ($SuccessMessage) { Write-Log $SuccessMessage "SUCCESS" }
+        return @{Success=$true; Result=$result}
+    } catch {
+        Write-Log "$OperationName failed: $_" "ERROR"
+        if ($OnError) { & $OnError }
+        return @{Success=$false; Error=$_}
+    }
+}
+
+#endregion
+
+#region Menu and Selection Helpers
 
 function Select-Menu {
     param([string[]]$Items, [string]$Title = "MENU")
-    $selected = 0
-    $last = -1
+    $selected = 0; $last = -1
     Show-Banner
-    Write-Host "  > $Title" -ForegroundColor Cyan
-    Write-Host "  |  (Use UP/DOWN arrows, ENTER to select)`n  |" -ForegroundColor DarkGray
+    Write-Host "  > $Title`n  |  Use UP/DOWN arrows and ENTER to select`n  |" -ForegroundColor Cyan
     $menuStart = [Console]::CursorTop
-    
-    foreach ($item in $Items) { Write-Host "  |     $item" -ForegroundColor White }
+    $Items | ForEach-Object { Write-Host "  |     $_" -ForegroundColor White }
     Write-Host "  |`n  >$('=' * 76)`n" -ForegroundColor Cyan
-    
     while ($true) {
-        # Redraw selected item
         if ($selected -ne $last) {
             if ($last -ge 0) {
                 [Console]::SetCursorPosition(0, $menuStart + $last)
@@ -69,8 +94,6 @@ function Select-Menu {
             Write-Host "  |  >> $($Items[$selected])" -ForegroundColor Green
             $last = $selected
         }
-        
-        # Handle keyboard input
         $key = [Console]::ReadKey($true)
         if ($key.Key -eq "UpArrow") { $selected = ($selected - 1 + $Items.Count) % $Items.Count }
         elseif ($key.Key -eq "DownArrow") { $selected = ($selected + 1) % $Items.Count }
@@ -81,142 +104,111 @@ function Select-Menu {
     }
 }
 
+function Get-ValidatedInput {
+    param([string]$Prompt, [scriptblock]$Validator = {$true}, [string]$ErrorMessage = "Invalid input. Please try again.", [string]$DefaultValue = $null)
+    do {
+        $input = Read-Host "  $Prompt"
+        if ([string]::IsNullOrWhiteSpace($input) -and $DefaultValue) {
+            return $DefaultValue
+        }
+        if (& $Validator $input) {
+            return $input
+        }
+        Write-Log $ErrorMessage "WARN"
+    } while ($true)
+}
+
+function Confirm-Action {
+    param([string]$Message, [bool]$DefaultYes = $false)
+    $response = Read-Host "  $Message (Y/N)"
+    if ($DefaultYes) {
+        return $response -notmatch "^[Nn]$"
+    }
+    return $response -match "^[Yy]$"
+}
+
+#endregion
+
+#region VM Operations Helpers
 
 function Select-VM {
     param([string]$Title = "SELECT VIRTUAL MACHINE", [bool]$AllowRunning = $false)
-    
     Write-Box $Title
-    
-    # Get VMs based on filter
-    if ($AllowRunning) {
-        $vms = @(Get-VM)
-    } else {
-        $vms = @(Get-VM | Where-Object { $_.State -eq 'Off' })
-    }
-    
+    $vms = @(Get-VM | Where-Object { $AllowRunning -or $_.State -eq 'Off' })
     if ($vms.Count -eq 0) {
-        if ($AllowRunning) {
-            Write-Log "No VMs found" "ERROR"
-        } else {
-            Write-Log "No stopped VMs found. VMs must be powered off for this operation." "ERROR"
-        }
+        Write-Log "No $(if (!$AllowRunning) { 'stopped ' })VMs found$(if (!$AllowRunning) { '. VMs must be powered off for this operation.' })" "ERROR"
         Write-Host ""
         return $null
     }
-    
-    # Build menu items with VM info
     $menuItems = @()
-    foreach ($vm in $vms) {
-        $ram = if ($vm.MemoryAssigned -gt 0) { 
-            [math]::Round($vm.MemoryAssigned / 1GB, 0) 
-        } else { 
-            [math]::Round($vm.MemoryStartup / 1GB, 0) 
-        }
-        
-        $gpuAdapter = Get-VMGpuPartitionAdapter $vm.Name -EA SilentlyContinue
-        $gpu = if ($gpuAdapter) { 
-            "$([math]::Round(($gpuAdapter.MaxPartitionVRAM / 1000000000) * 100, 0))%" 
-        } else { 
-            "None" 
-        }
-        
-        $state = $vm.State
-        $menuItems += "$($vm.Name) | State: $state | RAM: ${ram}GB | CPU: $($vm.ProcessorCount) | GPU: $gpu"
-    }
-    
-    $menuItems += "< Cancel >"
-    
+    $menuItems += $vms | ForEach-Object { Format-VMMenuItem $_ }
+    $menuItems += "< Cancel >"  # Ensure Cancel is always last and on its own line!
     $selection = Select-Menu -Items $menuItems -Title $Title
-    
-    # If user selected cancel
-    if ($selection -eq $menuItems.Count - 1) {
-        return $null
-    }
-    
+    if ($selection -eq ($menuItems.Count - 1)) { return $null }
     return $vms[$selection]
 }
 
-
-function Show-Spinner {
-    param([string]$Message, [int]$Duration = 2)
-    $spinner = @('|', '/', '-', '\')
-    $elapsed = 0
-    
-    while ($elapsed -lt $Duration) {
-        foreach ($char in $spinner) {
-            Write-Host "`r  $char $Message" -ForegroundColor Cyan -NoNewline
-            Start-Sleep -Milliseconds 150
-            $elapsed += 0.15
-            if ($elapsed -ge $Duration) { break }
-        }
-    }
-    Write-Host "`r  + $Message" -ForegroundColor Green
+function Format-VMMenuItem {
+    param($VM)
+    $ramSource = if ($VM.MemoryAssigned -gt 0) { $VM.MemoryAssigned } else { $VM.MemoryStartup }
+    $ram = [math]::Round($ramSource / 1GB, 0)
+    $gpuAdapter = Get-VMGpuPartitionAdapter $VM.Name -EA SilentlyContinue
+    $gpu = if ($gpuAdapter) { "$([math]::Round(($gpuAdapter.MaxPartitionVRAM / 1000000000) * 100, 0))%" } else { "None" }
+    return "$($VM.Name) | State: $($VM.State) | RAM: ${ram}GB | CPU: $($VM.ProcessorCount) | GPU: $gpu"
 }
-
 
 function Stop-VMSafe {
     param([string]$VMName)
     $vm = Get-VM $VMName -EA SilentlyContinue
-    
-    # VM doesn't exist or is already off
     if (!$vm -or $vm.State -eq "Off") { return $true }
-    
     Write-Host "`r  | Shutting down VM..." -ForegroundColor Cyan -NoNewline
-    try {
+    $result = Invoke-WithErrorHandling -OperationName "Stop VM" -ScriptBlock {
         Stop-VM $VMName -Force -EA Stop
-        $timeout = 0
-        
-        # Wait up to 60 seconds for graceful shutdown
-        while ((Get-VM $VMName).State -ne "Off" -and $timeout -lt 60) {
-            Start-Sleep -Milliseconds 500
-            $timeout++
-            $char = @('|', '/', '-', '\')[$timeout % 4]
-            Write-Host "`r  $char Shutting down VM... ($timeout sec)" -ForegroundColor Cyan -NoNewline
-        }
-        
-        # If still not off, force it
-        if ((Get-VM $VMName).State -eq "Off") {
-            Write-Host "`r  + VM shut down successfully            " -ForegroundColor Green
-            Start-Sleep -Seconds 2
-            return $true
-        }
-        
+        $success = Show-SpinnerWithCondition -Message "Shutting down VM" -Condition { (Get-VM $VMName).State -eq "Off" } -TimeoutSeconds 60 -SuccessMessage "VM shut down successfully"
+        if ($success) { Start-Sleep -Seconds 2; return $true }
         Stop-VM $VMName -TurnOff -Force -EA Stop
         Start-Sleep -Seconds 3
         return $true
-    } catch {
-        Write-Host "`r  X Failed to stop VM: $_" -ForegroundColor Red
-        return $false
     }
+    return $result.Success
 }
 
+function Test-VMState {
+    param([string]$VMName, [string]$RequiredState = "Off")
+    $vm = Get-VM $VMName -EA SilentlyContinue
+    if (!$vm) {
+        Write-Log "VM not found: $VMName" "ERROR"
+        return $false
+    }
+    if ($vm.State -ne $RequiredState -and $RequiredState -eq "Off") {
+        return Stop-VMSafe -VMName $VMName
+    }
+    return $vm.State -eq $RequiredState
+}
+
+#endregion
+
+#region Disk Operations Helpers
 
 function Mount-VMDisk {
     param([string]$VHDPath)
-    $mountPoint = "C:\Temp\VMMount_$(Get-Random)"
-    New-Item $mountPoint -ItemType Directory -Force | Out-Null
-    
-    Show-Spinner "Mounting virtual disk..." 2
-    $mounted = Mount-VHD $VHDPath -NoDriveLetter -PassThru -EA Stop
-    Start-Sleep -Seconds 2
-    Update-Disk $mounted.DiskNumber -EA SilentlyContinue
-    
-    # Find the largest partition (usually the Windows partition)
-    $partition = Get-Partition -DiskNumber $mounted.DiskNumber -EA Stop | 
-        Where-Object { $_.Size -gt 10GB } | 
-        Sort-Object Size -Descending | 
-        Select-Object -First 1
-    
-    if (!$partition) { throw "No valid partition found" }
-    
-    Show-Spinner "Mounting partition..." 1
-    Add-PartitionAccessPath -DiskNumber $mounted.DiskNumber -PartitionNumber $partition.PartitionNumber -AccessPath $mountPoint
-    
-    if (!(Test-Path "$mountPoint\Windows")) { throw "Windows directory not found" }
-    
-    return @{Mounted=$mounted; Partition=$partition; MountPoint=$mountPoint}
+    $mountPoint = "C:\\Temp\\VMMount_$(Get-Random)"
+    $result = Invoke-WithErrorHandling -OperationName "Mount VHD" -ScriptBlock {
+        New-Item $mountPoint -ItemType Directory -Force | Out-Null
+        Show-Spinner "Mounting virtual disk..." 2
+        $mounted = Mount-VHD $VHDPath -NoDriveLetter -PassThru -EA Stop
+        Start-Sleep -Seconds 2
+        Update-Disk $mounted.DiskNumber -EA SilentlyContinue
+        $partition = Get-Partition -DiskNumber $mounted.DiskNumber -EA Stop | Where-Object { $_.Size -gt 10GB } | Sort-Object Size -Descending | Select-Object -First 1
+        if (!$partition) { throw "No valid partition found" }
+        Show-Spinner "Mounting partition..." 1
+        Add-PartitionAccessPath -DiskNumber $mounted.DiskNumber -PartitionNumber $partition.PartitionNumber -AccessPath $mountPoint
+        if (!(Test-Path "$mountPoint\Windows")) { throw "Windows directory not found" }
+        return @{Mounted=$mounted; Partition=$partition; MountPoint=$mountPoint}
+    }
+    if ($result.Success) { return $result.Result }
+    throw $result.Error
 }
-
 
 function Dismount-VMDisk {
     param($MountInfo, [string]$VHDPath)
@@ -227,374 +219,173 @@ function Dismount-VMDisk {
     if ($MountInfo.MountPoint) { Remove-Item $MountInfo.MountPoint -Recurse -Force -EA SilentlyContinue }
 }
 
+function New-DirectorySafe {
+    param([string]$Path)
+    if (!(Test-Path $Path)) { New-Item -Path $Path -ItemType Directory -Force -EA SilentlyContinue | Out-Null }
+}
+
+#endregion
+
+#region GPU Operations Helpers
 
 function Select-GPUDevice {
     Write-Box "SELECT GPU DEVICE"
-    
-    # Get all display adapters
-    $gpuDrivers = Get-WmiObject Win32_PnPSignedDriver -EA SilentlyContinue | Where-Object { $_.DeviceClass -eq "Display" }
-    
-    if ($gpuDrivers.Count -eq 0) {
+    $gpuDrivers = @(Get-WmiObject Win32_PnPSignedDriver -EA SilentlyContinue | Where-Object { $_.DeviceClass -eq "Display" })
+    if (-not $gpuDrivers -or $gpuDrivers.Count -eq 0) {
         Write-Log "No display adapters found" "ERROR"
         return $null
     }
-    
-    $gpuList = @()
-    $index = 1
-    
-    Write-Host ""
-    foreach ($gpu in $gpuDrivers) {
-        $gpuList += $gpu
-        Write-Host "  [$index] $($gpu.DeviceName)" -ForegroundColor Green
+    for ($i=0; $i -lt $gpuDrivers.Count; $i++) {
+        $gpu = $gpuDrivers[$i]
+        Write-Host "  [$($i + 1)] $($gpu.DeviceName)" -ForegroundColor Green
         Write-Host "      Provider: $($gpu.DriverProviderName) | Version: $($gpu.DriverVersion)" -ForegroundColor DarkGray
-        $index++
     }
     Write-Host ""
-    
-    # Get user selection
-    do {
-        $selection = Read-Host "  Enter GPU number (1-$($gpuList.Count))"
-        $selectionNum = [int]$selection
-    } while ($selectionNum -lt 1 -or $selectionNum -gt $gpuList.Count)
-    
-    return $gpuList[$selectionNum - 1]
+    $maxNum = $gpuDrivers.Count
+    while ($true) {
+        $selection = Read-Host "  Enter GPU number (1-$maxNum)"
+        if ([int]::TryParse($selection, [ref]$null) -and [int]$selection -ge 1 -and [int]$selection -le $maxNum) {
+            return $gpuDrivers[[int]$selection - 1]
+        }
+        Write-Log "Please enter a valid number between 1 and $maxNum" "WARN"
+    }
 }
 
+function Copy-ItemWithLogging {
+    param([string]$SourcePath, [string]$DestinationPath, [string]$ItemName, [bool]$Recurse = $false)
+    $destDir = Split-Path -Parent $DestinationPath
+    New-DirectorySafe -Path $destDir
+    $result = Invoke-WithErrorHandling -OperationName "Copy $ItemName" -ScriptBlock {
+        $params = @{ Path = $SourcePath; Destination = $DestinationPath; Force = $true; ErrorAction = 'Stop' }
+        if ($Recurse) { $params['Recurse'] = $true }
+        Copy-Item @params
+        Write-Log "+ $ItemName" "SUCCESS"
+        return $true
+    } -OnError { Write-Log "! ${ItemName}: Skipped" "WARN" }
+    return $result.Success
+}
 
 function Get-DriverFiles {
     param([Object]$GPU)
-    
     Write-Box "ANALYZING GPU DRIVERS" "-"
     Write-Log "GPU: $($GPU.DeviceName)" "INFO"
     Write-Log "Provider: $($GPU.DriverProviderName)" "INFO"
-    Write-Log "Version: $($GPU.DriverVersion)" "INFO"
-    Write-Host ""
-    
-    # Find the INF file from registry
+    Write-Log "Version: $($GPU.DriverVersion)" "INFO"; Write-Host ""
     Show-Spinner "Finding INF file from registry..." 1
-    
     $registryPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-    $driverSubkeys = Get-ChildItem -Path $registryPath -EA SilentlyContinue
-    
-    $infFileName = $null
-    $foundInRegistry = $false
-    
-    # Search registry for matching device
-    foreach ($subkey in $driverSubkeys) {
-        $props = Get-ItemProperty -Path $subkey.PSPath -EA SilentlyContinue
-        
-        if ($props.MatchingDeviceId) {
-            $deviceIdFromReg = $props.MatchingDeviceId
-            
-            if ($GPU.DeviceID -like "*$deviceIdFromReg*" -or $deviceIdFromReg -like "*$($GPU.DeviceID)*") {
-                $infFileName = $props.InfPath
-                Write-Log "Found INF: $infFileName" "SUCCESS"
-                $foundInRegistry = $true
-                break
-            }
+    $infFileName = (Get-ChildItem -Path $registryPath -EA SilentlyContinue | ForEach-Object {
+        $props = Get-ItemProperty -Path $_.PSPath -EA SilentlyContinue
+        if ($props.MatchingDeviceId -and ($GPU.DeviceID -like "*$($props.MatchingDeviceId)*" -or $props.MatchingDeviceId -like "*$($GPU.DeviceID)*")) {
+            Write-Log "Found INF: $($props.InfPath)" "SUCCESS"
+            $props.InfPath
         }
-    }
-    
-    if (-not $foundInRegistry) {
+    }) | Select-Object -First 1
+    if (-not $infFileName) {
         Write-Log "Could not find GPU in registry" "ERROR"
         return $null
     }
-    
-    # Read the INF file
     $infFilePath = "C:\Windows\INF\$infFileName"
-    
-    if (-not (Test-Path $infFilePath)) {
+    if (!(Test-Path $infFilePath)) {
         Write-Log "INF file not found: $infFilePath" "ERROR"
         return $null
     }
-    
     Show-Spinner "Reading INF file..." 1
     $infContent = Get-Content $infFilePath -Raw
-    
-    # Extract file references from INF
     Show-Spinner "Parsing INF for file references..." 1
-    
-    $filePatterns = @(
-        '[\w\-\.]+\.sys',
-        '[\w\-\.]+\.dll',
-        '[\w\-\.]+\.exe',
-        '[\w\-\.]+\.cat',
-        '[\w\-\.]+\.inf',
-        '[\w\-\.]+\.bin',
-        '[\w\-\.]+\.vp',
-        '[\w\-\.]+\.cpa'
-    )
-    
-    $referencedFiles = @()
-    
-    foreach ($pattern in $filePatterns) {
-        $matches = [regex]::Matches($infContent, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-        
-        foreach ($match in $matches) {
-            if ($match.Value -and -not ($referencedFiles -contains $match.Value)) {
-                $referencedFiles += $match.Value
-            }
-        }
-    }
-    
-    Write-Log "Found $($referencedFiles.Count) file references in INF" "SUCCESS"
-    Write-Host ""
-    
-    # Search for these files in system
+    $filePatterns = @('[\w\-\.]+\.sys','[\w\-\.]+\.dll','[\w\-\.]+\.exe','[\w\-\.]+\.cat','[\w\-\.]+\.inf','[\w\-\.]+\.bin','[\w\-\.]+\.vp','[\w\-\.]+\.cpa')
+    $referencedFiles = $filePatterns | ForEach-Object { [regex]::Matches($infContent, $_, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) } | ForEach-Object { $_ | ForEach-Object { $_.Value } } | Sort-Object -Unique
+    Write-Log "Found $($referencedFiles.Count) file references in INF" "SUCCESS"; Write-Host ""
     Show-Spinner "Locating files in system..." 2
-    
+    $searchPaths = @(
+        @{Path="C:\Windows\System32\DriverStore\FileRepository"; Type="DriverStore"; Recurse=$true},
+        @{Path="C:\Windows\System32"; Type="System32"; Recurse=$false},
+        @{Path="C:\Windows\SysWow64"; Type="SysWow64"; Recurse=$false}
+    )
     $foundFiles = @()
     $driverStoreFolders = @()
-    
-    $searchPaths = @(
-        @{Path = "C:\Windows\System32\DriverStore\FileRepository"; Type = "DriverStore"; Recurse = $true}
-        @{Path = "C:\Windows\System32"; Type = "System32"; Recurse = $false}
-        @{Path = "C:\Windows\SysWow64"; Type = "SysWow64"; Recurse = $false}
-    )
-    
-    foreach ($fileName in $referencedFiles) {
+    $referencedFiles | ForEach-Object {
+        $fileName = $_
         $found = $false
-        
-        foreach ($searchPath in $searchPaths) {
-            if ($found) { break }
-            
-            $searchArgs = @{
-                Path = $searchPath.Path
-                Filter = $fileName
-                EA = 'SilentlyContinue'
-            }
-            
-            if ($searchPath.Recurse) {
-                $searchArgs['Recurse'] = $true
-            }
-            
+        $searchPaths | ForEach-Object {
+            if ($found) { return }
+            $searchArgs = @{Path=$_['Path']; Filter=$fileName; EA='SilentlyContinue'}
+            if ($_['Recurse']) { $searchArgs['Recurse'] = $true }
             $result = Get-ChildItem @searchArgs | Select-Object -First 1
-            
             if ($result) {
                 $found = $true
-                
-                # Track DriverStore folders separately (they contain many files)
-                if ($searchPath.Type -eq "DriverStore") {
-                    $folderPath = $result.DirectoryName
-                    
-                    if ($folderPath -notin $driverStoreFolders) {
-                        $driverStoreFolders += $folderPath
-                    }
+                if ($_['Type'] -eq "DriverStore") {
+                    if ($result.DirectoryName -notin $driverStoreFolders) { $driverStoreFolders += $result.DirectoryName }
                 } else {
-                    # Individual system files
-                    $foundFiles += [PSCustomObject]@{
-                        FileName = $fileName
-                        FullPath = $result.FullName
-                        DestPath = $result.FullName.Replace("C:", "")
-                    }
+                    $foundFiles += [PSCustomObject]@{FileName=$fileName; FullPath=$result.FullName; DestPath=$result.FullName.Replace("C:","")}
                 }
             }
         }
     }
-    
-    Write-Log "Located $($foundFiles.Count) system files + $($driverStoreFolders.Count) DriverStore folder(s)" "SUCCESS"
-    Write-Host ""
-    
-    return @{
-        Files = $foundFiles
-        StoreFolders = $driverStoreFolders
-    }
+    Write-Log "Located $($foundFiles.Count) system files + $($driverStoreFolders.Count) DriverStore folder(s)" "SUCCESS"; Write-Host ""
+    return @{Files=$foundFiles; StoreFolders=$driverStoreFolders}
 }
+#endregion
 
+#region VM Configuration and Setup
 
 function Get-VMConfig {
-    # Preset configurations
-    $presets = @(
-        "Gaming       | 16GB RAM, 8 CPU,  256GB Storage",
-        "Development  | 8GB RAM,  4 CPU,  128GB Storage",
-        "ML Training  | 32GB RAM, 12 CPU, 512GB Storage",
-        "Custom Configuration"
-    )
+    $presets = @("Gaming       | 16GB RAM, 8 CPU,  256GB Storage","Development  | 8GB RAM,  4 CPU,  128GB Storage","ML Training  | 32GB RAM, 12 CPU, 512GB Storage","Custom Configuration")
     $presetData = @(
         @{Name="Gaming-VM"; RAM=16; CPU=8; Storage=256},
         @{Name="Dev-VM"; RAM=8; CPU=4; Storage=128},
         @{Name="ML-VM"; RAM=32; CPU=12; Storage=512}
     )
-    
     $choice = Select-Menu -Items $presets -Title "VM CONFIGURATION"
-    
-    # Use preset or custom config
     if ($choice -lt 3) {
-        $preset = $presetData[$choice]
-        Write-Host ""
+        $preset = $presetData[$choice]; Write-Host ""
         $name = Read-Host "  VM Name (default: $($preset.Name))"
-        $iso = Read-Host "  ISO Path (Enter to skip)"
-        Write-Host ""
-        return @{
-            Name = if($name){$name}else{$preset.Name}
-            RAM = $preset.RAM
-            CPU = $preset.CPU
-            Storage = $preset.Storage
-            Path = "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
-            ISO = $iso
-        }
+        $iso = Read-Host "  ISO Path (Enter to skip)"; Write-Host ""
+        return @{Name=$(if ($name) { $name } else { $preset.Name }); RAM=$preset.RAM; CPU=$preset.CPU; Storage=$preset.Storage; Path="C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"; ISO=$iso}
     }
-    
-    # Custom configuration
     Write-Box "CUSTOM VM CONFIGURATION" "-"
-    $name = Read-Host "  VM Name"
-    $ram = [int](Read-Host "  RAM in GB")
-    $cpu = [int](Read-Host "  CPU Cores")
-    $storage = [int](Read-Host "  Storage in GB")
-    $iso = Read-Host "  ISO Path (Enter to skip)"
-    Write-Host ""
-    
     return @{
-        Name=$name
-        RAM=$ram
-        CPU=$cpu
-        Storage=$storage
-        Path="C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
-        ISO=$iso
+        Name = Get-ValidatedInput -Prompt "VM Name" -Validator { param($v) ![string]::IsNullOrWhiteSpace($v) }
+        RAM = [int](Get-ValidatedInput -Prompt "RAM in GB" -Validator { param($v) [int]::TryParse($v, [ref]$null) -and [int]$v -gt 0 })
+        CPU = [int](Get-ValidatedInput -Prompt "CPU Cores" -Validator { param($v) [int]::TryParse($v, [ref]$null) -and [int]$v -gt 0 })
+        Storage = [int](Get-ValidatedInput -Prompt "Storage in GB" -Validator { param($v) [int]::TryParse($v, [ref]$null) -and [int]$v -gt 0 })
+        Path = "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
+        ISO = (Read-Host "  ISO Path (Enter to skip)")
     }
 }
-
-
-function Select-NetworkAdapter {
-    Write-Box "SELECT NETWORK ADAPTER"
-    
-    # Get all physical network adapters (exclude virtual/loopback adapters)
-    $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" -and $_.InterfaceType -ne "Software Loopback" } | Sort-Object Name
-    
-    if ($adapters.Count -eq 0) {
-        Write-Log "No active network adapters found" "ERROR"
-        return $null
-    }
-    
-    $adapterList = @()
-    $index = 1
-    
-    Write-Host ""
-    foreach ($adapter in $adapters) {
-        $adapterList += $adapter
-        Write-Host "  [$index] $($adapter.Name)" -ForegroundColor Green
-        Write-Host "      Status: $($adapter.Status) | Description: $($adapter.InterfaceDescription)" -ForegroundColor DarkGray
-        $index++
-    }
-    Write-Host ""
-    
-    # Get user selection
-    do {
-        $selection = Read-Host "  Enter adapter number (1-$($adapterList.Count))"
-        $selectionNum = [int]$selection
-    } while ($selectionNum -lt 1 -or $selectionNum -gt $adapterList.Count)
-    
-    return $adapterList[$selectionNum - 1]
-}
-
-
-function Initialize-VirtualSwitch {
-    # Check if an external virtual switch already exists
-    $externalSwitch = Get-VMSwitch -EA SilentlyContinue | Where-Object { $_.SwitchType -eq "External" }
-    
-    if ($externalSwitch) {
-        Write-Log "External virtual switch already exists: $($externalSwitch.Name)" "SUCCESS"
-        return $true
-    }
-    
-    Write-Box "VIRTUAL SWITCH SETUP"
-    Write-Log "No external virtual switch found. Creating one..." "INFO"
-    Write-Host ""
-    
-    # Select network adapter
-    $adapter = Select-NetworkAdapter
-    if (!$adapter) {
-        Write-Log "No network adapter selected" "WARN"
-        return $false
-    }
-    
-    Write-Host ""
-    $switchName = Read-Host "  Virtual Switch Name (default: External)"
-    if (!$switchName) { $switchName = "External" }
-    Write-Host ""
-    
-    try {
-        Show-Spinner "Creating external virtual switch..." 2
-        
-        # Create external virtual switch
-        New-VMSwitch -Name $switchName -NetAdapterName $adapter.Name -AllowManagementOS $true -EA Stop | Out-Null
-        
-        Write-Host ""
-        Write-Box "VIRTUAL SWITCH CREATED: $switchName" "-"
-        Write-Log "Switch Name: $switchName" "SUCCESS"
-        Write-Log "Connected to: $($adapter.Name) ($($adapter.InterfaceDescription))" "SUCCESS"
-        Write-Host ""
-        return $true
-    } catch {
-        Write-Log "Virtual switch creation failed: $_" "ERROR"
-        return $false
-    }
-}
-
-
-# ==============================================================================
-#  VM OPERATIONS
-# ==============================================================================
-
 
 function Initialize-VM {
     param($Config)
     Write-Box "CREATING VIRTUAL MACHINE"
-    Write-Log "VM: $($Config.Name) | RAM: $($Config.RAM)GB | CPU: $($Config.CPU) | Storage: $($Config.Storage)GB" "INFO"
-    Write-Host ""
-    
+    Write-Log "VM: $($Config.Name) | RAM: $($Config.RAM)GB | CPU: $($Config.CPU) | Storage: $($Config.Storage)GB" "INFO"; Write-Host ""
     $vhdPath = Join-Path $Config.Path "$($Config.Name).vhdx"
-    
-    # Check if VM already exists
     if (Get-VM $Config.Name -EA SilentlyContinue) {
         Write-Log "VM already exists" "ERROR"
         return $null
     }
-    
-    # Check if VHDX already exists
     if (Test-Path $vhdPath) {
-        if ((Read-Host "  VHDX exists. Overwrite? (Y/N)") -notmatch "^[Yy]$") {
+        if (!(Confirm-Action "VHDX exists. Overwrite?")) {
             Write-Log "Operation cancelled" "WARN"
             return $null
         }
         Remove-Item $vhdPath -Force
     }
-    
-    # Initialize Virtual Switch right before VM creation (after ISO selection)
-    $switchResult = Initialize-VirtualSwitch
-    if (-not $switchResult) {
-        Write-Log "Virtual switch setup failed" "ERROR"
-        return $null
-    }
-    Write-Host ""
-    
-    try {
-        # Create VM
+    $result = Invoke-WithErrorHandling -OperationName "VM Creation" -ScriptBlock {
         Show-Spinner "Creating VM configuration..." 2
-        New-Item -ItemType Directory -Path $Config.Path -Force -EA SilentlyContinue | Out-Null
+        New-DirectorySafe -Path $Config.Path
         New-VM -Name $Config.Name -MemoryStartupBytes ([int64]$Config.RAM * 1GB) -Generation 2 -NewVHDPath $vhdPath -NewVHDSizeBytes ([int64]$Config.Storage * 1GB) | Out-Null
-        
-        # Configure processor and memory
         Show-Spinner "Configuring processor and memory..." 1
         Set-VMProcessor $Config.Name -Count $Config.CPU
         Set-VMMemory $Config.Name -DynamicMemoryEnabled $false
-        
-        # Apply security settings
         Show-Spinner "Applying security settings..." 1
         Set-VM $Config.Name -CheckpointType Disabled -AutomaticStopAction ShutDown -AutomaticStartAction Nothing -AutomaticCheckpointsEnabled $false
         Set-VMHost -EnableEnhancedSessionMode $false
         Disable-VMIntegrationService $Config.Name -Name "Guest Service Interface", "VSS"
-        
-        # Finalize setup (TPM and Secure Boot)
         Show-Spinner "Finalizing setup..." 1
         Stop-VM $Config.Name -Force -EA SilentlyContinue
         while ((Get-VM $Config.Name).State -ne "Off") { Start-Sleep -Milliseconds 500 }
-        
         Set-VMFirmware $Config.Name -EnableSecureBoot On
         Set-VMKeyProtector $Config.Name -NewLocalKeyProtector
         Enable-VMTPM $Config.Name
-        
-        # Attach ISO if provided
         if ($Config.ISO -and (Test-Path $Config.ISO)) {
             Add-VMDvdDrive $Config.Name -Path $Config.ISO
             $dvd = Get-VMDvdDrive $Config.Name
@@ -602,259 +393,163 @@ function Initialize-VM {
             if ($dvd -and $hdd) { Set-VMFirmware $Config.Name -BootOrder $dvd, $hdd }
             Write-Log "ISO attached" "SUCCESS"
         }
-        
         Write-Host ""
         Write-Box "VM CREATED: $($Config.Name)" "-"
-        Write-Log "RAM: $($Config.RAM)GB | CPU: $($Config.CPU) | Storage: $($Config.Storage)GB" "SUCCESS"
-        Write-Host ""
+        Write-Log "RAM: $($Config.RAM)GB | CPU: $($Config.CPU) | Storage: $($Config.Storage)GB" "SUCCESS"; Write-Host ""
         return $Config.Name
-    } catch {
-        Write-Log "Creation failed: $_" "ERROR"
-        return $null
     }
+    if ($result.Success) { return $result.Result } else { return $null }
 }
 
 function Set-GPUPartition {
     param([string]$VMName, [int]$Percentage = 0)
-    
-    # Select VM if not provided
     if (!$VMName) {
         $vm = Select-VM -Title "SELECT VM FOR GPU PARTITION" -AllowRunning $false
         if (!$vm) { return $false }
         $VMName = $vm.Name
     }
-    
-    $vm = Get-VM $VMName -EA SilentlyContinue
-    if (!$vm) {
+    if (!(Get-VM $VMName -EA SilentlyContinue)) {
         Write-Log "VM not found: $VMName" "ERROR"
         return $false
     }
-    
     if ($Percentage -eq 0) {
         Write-Host ""
-        $Percentage = [int](Read-Host "  GPU Allocation % (1-100)")
+        $Percentage = [int](Get-ValidatedInput -Prompt "GPU Allocation % (1-100)" -Validator { param($v) [int]::TryParse($v, [ref]$null) -and [int]$v -ge 1 -and [int]$v -le 100 } -ErrorMessage "Please enter a number between 1 and 100")
     }
     $Percentage = [Math]::Max(1, [Math]::Min(100, $Percentage))
-    
     Write-Box "CONFIGURING GPU PARTITION"
-    Write-Log "VM: $VMName | Allocation: $Percentage%" "INFO"
-    Write-Host ""
-    
-    # Stop VM if running
-    if ($vm.State -ne "Off" -and !(Stop-VMSafe -VMName $VMName)) {
+    Write-Log "VM: $VMName | Allocation: $Percentage%" "INFO"; Write-Host ""
+    if (!(Test-VMState -VMName $VMName -RequiredState "Off")) {
         Write-Log "Failed to stop VM" "ERROR"
         return $false
     }
-    
-    try {
+    $result = Invoke-WithErrorHandling -OperationName "GPU Configuration" -ScriptBlock {
         Show-Spinner "Configuring GPU..." 2
-        
-        # Remove existing GPU adapter if present
         Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue | Remove-VMGpuPartitionAdapter
-        
-        # Add new GPU partition adapter
         Add-VMGpuPartitionAdapter $VMName
-        
-        # Calculate partition values
         $max = [int](($Percentage / 100) * 1000000000)
         $opt = $max - 1
-        
-        # Configure GPU partition
         Set-VMGpuPartitionAdapter $VMName -MinPartitionVRAM 1 -MaxPartitionVRAM $max -OptimalPartitionVRAM $opt -MinPartitionEncode 1 -MaxPartitionEncode $max -OptimalPartitionEncode $opt -MinPartitionDecode 1 -MaxPartitionDecode $max -OptimalPartitionDecode $opt -MinPartitionCompute 1 -MaxPartitionCompute $max -OptimalPartitionCompute $opt
-        
-        # Set VM memory mapping for GPU
         Set-VM $VMName -GuestControlledCacheTypes $true -LowMemoryMappedIoSpace 1GB -HighMemoryMappedIoSpace 32GB
-        
         Write-Host ""
-        Write-Box "GPU CONFIGURED: $Percentage%" "-"
-        Write-Host ""
+        Write-Box "GPU CONFIGURED: $Percentage%" "-"; Write-Host ""
         return $true
-    } catch {
-        Write-Log "GPU config failed: $_" "ERROR"
-        return $false
     }
+    return $result.Success
 }
-
 
 function Install-GPUDrivers {
     param([string]$VMName)
-    
-    # Select VM if not provided
     if (!$VMName) {
         $vm = Select-VM -Title "SELECT VM FOR DRIVER INJECTION" -AllowRunning $false
         if (!$vm) { return $false }
         $VMName = $vm.Name
     }
-    
     $vm = Get-VM $VMName -EA SilentlyContinue
     if (!$vm) {
         Write-Log "VM not found: $VMName" "ERROR"
         return $false
     }
-    
     $vhd = (Get-VMHardDiskDrive $VMName).Path
     if (!$vhd) {
         Write-Log "No VHD found" "ERROR"
         return $false
     }
-    
     Write-Box "AUTO-DETECT & INSTALL GPU DRIVERS"
-    Write-Log "Target: $VMName" "INFO"
-    Write-Host ""
-    
-    # Stop VM if running
-    if ($vm.State -ne "Off" -and !(Stop-VMSafe -VMName $VMName)) {
+    Write-Log "Target: $VMName" "INFO"; Write-Host ""
+    if (!(Test-VMState -VMName $VMName -RequiredState "Off")) {
         Write-Log "Failed to stop VM" "ERROR"
         return $false
     }
-    
     try {
-        # Select GPU and get driver files
         $selectedGPU = Select-GPUDevice
         if (!$selectedGPU) { return $false }
-        
         Write-Host ""
         $driverData = Get-DriverFiles -GPU $selectedGPU
         if (!$driverData) { return $false }
-        
-        # Mount VM disk
         $mountInfo = Mount-VMDisk -VHDPath $vhd
         $mp = $mountInfo.MountPoint
-        
         Show-Spinner "Preparing VM disk..." 1
-        
-        # Create HostDriverStore directory structure
         $hostDriverStorePath = "$mp\Windows\System32\HostDriverStore\FileRepository"
-        New-Item -Path $hostDriverStorePath -ItemType Directory -Force -EA SilentlyContinue | Out-Null
-        
-        Write-Log "Copying $($driverData.StoreFolders.Count) DriverStore folders..." "INFO"
-        Write-Host ""
-        
-        # Copy DriverStore folders to HostDriverStore
-        foreach ($storeFolder in $driverData.StoreFolders) {
-            $folderName = Split-Path -Leaf $storeFolder
+        New-DirectorySafe -Path $hostDriverStorePath
+        Write-Log "Copying $($driverData.StoreFolders.Count) DriverStore folders..." "INFO"; Write-Host ""
+        $driverData.StoreFolders | ForEach-Object {
+            $folderName = Split-Path -Leaf $_
             $destFolder = Join-Path $hostDriverStorePath $folderName
-            
-            try {
-                Copy-Item -Path $storeFolder -Destination $destFolder -Recurse -Force -EA Stop
-                $fileCount = @(Get-ChildItem -Path $destFolder -Recurse -File -EA SilentlyContinue).Count
-                Write-Log "+ $folderName ($fileCount files)" "SUCCESS"
-            } catch {
-                Write-Log "! ${folderName}: $_" "WARN"
+            $success = Copy-ItemWithLogging -SourcePath $_ -DestinationPath $destFolder -ItemName $folderName -Recurse $true
+            if ($success) {
+                $fileCount = (Get-ChildItem -Path $destFolder -Recurse -File -EA SilentlyContinue | Measure-Object).Count
+                Write-Host "      ($fileCount files)" -ForegroundColor DarkGray
             }
         }
-        
         Write-Host ""
         Write-Log "Copying $($driverData.Files.Count) system files..." "INFO"
-        
-        # Copy individual system files to their exact locations
-        foreach ($file in $driverData.Files) {
-            $destPath = "$mp$($file.DestPath)"
-            $destDir = Split-Path -Parent $destPath
-            
-            try {
-                New-Item -Path $destDir -ItemType Directory -Force -EA SilentlyContinue | Out-Null
-                Copy-Item -Path $file.FullPath -Destination $destPath -Force -EA Stop
-                Write-Log "+ $($file.FileName)" "SUCCESS"
-            } catch {
-                Write-Log "! $($file.FileName): $_" "WARN"
-            }
+        $driverData.Files | ForEach-Object {
+            $destPath = "$mp$($_.DestPath)"
+            Copy-ItemWithLogging -SourcePath $_.FullPath -DestinationPath $destPath -ItemName $_.FileName | Out-Null
         }
-        
         Write-Host ""
         Write-Box "DRIVER INJECTION COMPLETE" "-"
-        Write-Log "Injected $($driverData.Files.Count) files + $($driverData.StoreFolders.Count) folders to $VMName" "SUCCESS"
-        Write-Host ""
+        Write-Log "Injected $($driverData.Files.Count) files + $($driverData.StoreFolders.Count) folders to $VMName" "SUCCESS"; Write-Host ""
         return $true
     } catch {
         if ($_.Exception.Message -match "partition") {
             Write-Log "Windows not installed on this VM" "ERROR"
-            Write-Host "  Resolution: Install Windows first, then inject drivers`n" -ForegroundColor Yellow
+            Write-Host "  To inject drivers, please install Windows inside the VM first.`n" -ForegroundColor Yellow
+            return $false
         } else {
             Write-Log "Injection failed: $_" "ERROR"
+            return $false
         }
-        return $false
     } finally {
         Dismount-VMDisk -MountInfo $mountInfo -VHDPath $vhd
     }
 }
 
-
 function Copy-VMApps {
-    # Select VM
     $vm = Select-VM -Title "SELECT VM FOR APP COPY" -AllowRunning $false
     if (!$vm) { return $false }
-    
     $VMName = $vm.Name
-    
     $vhd = (Get-VMHardDiskDrive $VMName).Path
     if (!$vhd) {
         Write-Log "No VHD found" "ERROR"
         return $false
     }
-    
     Write-Box "COPYING VM APPLICATIONS"
-    Write-Log "Target: $VMName" "INFO"
-    Write-Host ""
-    
-    # Check if VM Apps folder exists
+    Write-Log "Target: $VMName" "INFO"; Write-Host ""
     $vmAppsFolder = Join-Path (Split-Path -Parent $PSCommandPath) "VM Apps"
     if (!(Test-Path $vmAppsFolder)) {
         Write-Log "VM Apps folder not found" "ERROR"
         return $false
     }
-    
-    $zipFiles = @(Get-ChildItem $vmAppsFolder -Filter "*.zip" -File)
-    if ($zipFiles.Count -eq 0) {
+    $zipFiles = Get-ChildItem $vmAppsFolder -Filter "*.zip" -File
+    if (-not $zipFiles) {
         Write-Log "No zip files found" "WARN"
         return $false
     }
-    
-    Write-Log "Found $($zipFiles.Count) app(s)" "INFO"
-    Write-Host ""
-    
-    # Stop VM if running
-    if ($vm.State -ne "Off" -and !(Stop-VMSafe -VMName $VMName)) {
+    Write-Log "Found $($zipFiles.Count) app(s)" "INFO"; Write-Host ""
+    if (!(Test-VMState -VMName $VMName -RequiredState "Off")) {
         Write-Log "Failed to stop VM" "ERROR"
         return $false
     }
-    
     try {
-        # Mount VM disk
         $mountInfo = Mount-VMDisk -VHDPath $vhd
         $mp = $mountInfo.MountPoint
-        
-        # Find user account
         Show-Spinner "Detecting user account..." 1
-        $userProfile = Get-ChildItem "$mp\Users" -Directory -EA SilentlyContinue | 
-            Where-Object { $_.Name -notin @("Public", "Administrator", "Default", "Default.migrated") } | 
-            Select-Object -First 1
-        
+        $userProfile = Get-ChildItem "$mp\Users" -Directory -EA SilentlyContinue | Where-Object { $_.Name -notin @("Public","Administrator","Default","Default.migrated") } | Select-Object -First 1
         if (!$userProfile) {
             Write-Log "No user profile found" "ERROR"
             return $false
         }
-        
-        # Copy apps to Downloads folder
         $destPath = "$mp\Users\$($userProfile.Name)\Downloads\VM Apps"
-        New-Item $destPath -ItemType Directory -Force | Out-Null
-        
+        New-DirectorySafe -Path $destPath
         Write-Log "Copying apps..." "INFO"
-        $success = 0
-        foreach ($zip in $zipFiles) {
-            try {
-                Copy-Item $zip.FullName -Destination $destPath -Force -EA Stop
-                Write-Log "+ $($zip.Name)" "SUCCESS"
-                $success++
-            } catch {
-                Write-Log "X $($zip.Name)" "WARN"
-            }
-        }
-        
+        $success = ($zipFiles | ForEach-Object {
+            if (Copy-ItemWithLogging -SourcePath $_.FullName -DestinationPath $destPath -ItemName $_.Name) { $true }
+        } | Measure-Object -Sum).Count
         Write-Host ""
         Write-Box "COPIED: $success/$($zipFiles.Count) files" "-"
-        Write-Log "Location: Users\$($userProfile.Name)\Downloads\VM Apps" "INFO"
-        Write-Host ""
+        Write-Log "Location: Users\$($userProfile.Name)\Downloads\VM Apps" "INFO"; Write-Host ""
         return $true
     } catch {
         Write-Log "Copy failed: $_" "ERROR"
@@ -864,171 +559,114 @@ function Copy-VMApps {
     }
 }
 
-
 function Invoke-CompleteSetup {
-    Write-Log "Starting complete setup..." "HEADER"
-    
-    Write-Host ""
-    
-    # Get VM configuration
+    Write-Log "Starting complete setup..." "HEADER"; Write-Host ""
     $config = Get-VMConfig
     $vmName = Initialize-VM -Config $config
     if (!$vmName) { return }
-    
-    # Get GPU allocation percentage
     Write-Host ""
-    $gpuPercent = Read-Host "  GPU Allocation % (default: 50)"
-    if (!$gpuPercent -or $gpuPercent -eq "") { $gpuPercent = 50 }
-    $gpuPercent = [int]$gpuPercent
-    
-    $gpuResult = Set-GPUPartition -VMName $vmName -Percentage $gpuPercent
+    $gpuPercent = Get-ValidatedInput -Prompt "GPU Allocation % (default: 50)" -Validator { param($v) [string]::IsNullOrWhiteSpace($v) -or ([int]::TryParse($v, [ref]$null) -and [int]$v -ge 1 -and [int]$v -le 100) } -DefaultValue "50"
+    $gpuResult = Set-GPUPartition -VMName $vmName -Percentage ([int]$gpuPercent)
     if (!$gpuResult) {
         Write-Log "GPU config failed" "ERROR"
         return
     }
-    
     Write-Host ""
     Write-Box "SETUP COMPLETE: $vmName" "-"
-    Write-Log "Next: Install OS and inject drivers (option 3)" "INFO"
+    Write-Log "Now attempting automatic GPU driver injection." "INFO"
+    Write-Host ""
+    $result = Install-GPUDrivers -VMName $vmName
+    if (-not $result) {
+        Write-Log "Driver injection could not complete." "WARN"
+        Write-Host "Please install Windows inside the VM first, then run driver injection (option 3)." -ForegroundColor Yellow
+    } else {
+        Write-Log "Complete setup finished successfully." "SUCCESS"
+    }
     Write-Host ""
 }
 
+#endregion
 
-function Show-SystemInfo {
-    Show-Banner
+#region Information Display
+
+function Show-VmInfo {
     Write-Box "HYPER-V VIRTUAL MACHINES"
-    Write-Log "Gathering VM info..." "INFO"
-    Write-Host ""
-    
-    $vms = @(Get-VM)
-    if ($vms.Count -eq 0) {
-        Write-Log "No VMs found" "WARN"
-        Write-Host ""
+    Write-Log "Gathering VM info..." "INFO"; Write-Host ""
+    $vms = Get-VM
+    if (-not $vms) {
+        Write-Log "No VMs found" "WARN"; Write-Host ""
         Read-Host "  Press Enter"
         return
     }
-    
-    # Get host GPU name for reference
-    $hostGPU = Get-WmiObject Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -notlike "*Microsoft*" -and $_.Name -notlike "*Remote*" } | Select-Object -First 1
-    $hostGPUName = if ($hostGPU) { $hostGPU.Name } else { "No GPU" }
-    
-    # Display each VM's information
-    foreach ($vm in $vms) {
-        # Get VHD size
+    $vms | ForEach-Object {
         $vhdSize = 0
         try {
-            $vhdInfo = $vm.VMId | Get-VHD -EA SilentlyContinue
+            $vhdInfo = $_.VMId | Get-VHD -EA SilentlyContinue
             if ($vhdInfo) { $vhdSize = [math]::Round($vhdInfo.Size / 1GB, 0) }
         } catch {}
-        
-        # Get RAM
-        $ram = if ($vm.MemoryAssigned -gt 0) { 
-            [math]::Round($vm.MemoryAssigned / 1GB, 0) 
-        } else { 
-            [math]::Round($vm.MemoryStartup / 1GB, 0) 
-        }
-        
-        # Get GPU allocation with GPU name
-        $gpuAdapter = Get-VMGpuPartitionAdapter $vm.Name -EA SilentlyContinue
-        $gpu = if ($gpuAdapter) { 
-            $gpuPercent = [math]::Round(($gpuAdapter.MaxPartitionVRAM / 1000000000) * 100, 0)
-            "$gpuPercent% - $hostGPUName"
-        } else { 
-            "None" 
-        }
-        
-        $stateColor = if ($vm.State -eq "Running") { "Green" } else { "Yellow" }
-        
+        $ramSource = if ($_.MemoryAssigned -gt 0) { $_.MemoryAssigned } else { $_.MemoryStartup }
+        $ram = [math]::Round($ramSource / 1GB, 0)
+        $stateColor = if ($_.State -eq "Running") { "Green" } else { "Yellow" }
         Write-Host "  +$('-' * 76)" -ForegroundColor Cyan
         Write-Host "  |  VM: " -ForegroundColor Cyan -NoNewline
-        Write-Host $vm.Name -ForegroundColor White
+        Write-Host $_.Name -ForegroundColor White
         Write-Host "  |  State: " -ForegroundColor Cyan -NoNewline
-        Write-Host "$($vm.State) " -ForegroundColor $stateColor -NoNewline
+        Write-Host "$($_.State) " -ForegroundColor $stateColor -NoNewline
         Write-Host "| RAM: " -ForegroundColor Cyan -NoNewline
         Write-Host "${ram}GB " -ForegroundColor Cyan -NoNewline
         Write-Host "| CPU: " -ForegroundColor Cyan -NoNewline
-        Write-Host "$($vm.ProcessorCount) " -ForegroundColor Yellow -NoNewline
+        Write-Host "$($_.ProcessorCount) " -ForegroundColor Yellow -NoNewline
         Write-Host "| Storage: " -ForegroundColor Cyan -NoNewline
-        Write-Host "${vhdSize}GB " -ForegroundColor Magenta -NoNewline
-        Write-Host "| GPU: " -ForegroundColor Cyan -NoNewline
-        Write-Host $gpu -ForegroundColor Magenta
+        Write-Host "${vhdSize}GB " -ForegroundColor Magenta
         Write-Host "  +$('-' * 76)" -ForegroundColor Cyan
     }
-    
     Write-Host ""
+    Read-Host "  Press Enter"
+}
+
+function Show-GpuInfo {
     Write-Box "HOST GPU INFORMATION"
-    
-    # Display all GPU info (universal - works with any GPU)
     $gpus = Get-WmiObject Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -notlike "*Microsoft*" -and $_.Name -notlike "*Remote*" }
-    
     if ($gpus) {
-        foreach ($gpu in $gpus) {
-            Write-Host "  GPU: $($gpu.Name)" -ForegroundColor Green
-            Write-Host "  Driver Version: $($gpu.DriverVersion)" -ForegroundColor Green
-            Write-Host "  Driver Date: $($gpu.DriverDate)" -ForegroundColor Green
-            
-            # Get VRAM using vendor-specific tools or WMI fallback
-            $vramGB = $null
-            $vramSource = "unknown"
-            
-            # NVIDIA: Use nvidia-smi
-            if ($gpu.Name -like "*NVIDIA*") {
+        $gpus | ForEach-Object {
+            Write-Host "  GPU: $($_.Name)" -ForegroundColor Green
+            Write-Host "  Driver Version: $($_.DriverVersion)" -ForegroundColor Green
+            Write-Host "  Driver Date: $($_.DriverDate)" -ForegroundColor Green
+            $vramGB = $null; $vramSource = "unknown"
+            if ($_.Name -like "*NVIDIA*") {
                 try {
                     $nvidiaSmi = nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
                     if ($nvidiaSmi -and $nvidiaSmi -match '^\d+$') {
                         $vramGB = [math]::Round([int]$nvidiaSmi / 1024, 2)
                         $vramSource = "nvidia-smi"
                     }
-                } catch {
-                    # nvidia-smi failed or not installed
-                }
-            }
-            
-            # AMD: Use rocm-smi
-            elseif ($gpu.Name -like "*AMD*" -or $gpu.Name -like "*Radeon*") {
+                } catch {}
+            } elseif ($_.Name -like "*AMD*" -or $_.Name -like "*Radeon*") {
                 try {
                     $rocmOutput = rocm-smi --showmeminfo --showid 2>$null
                     if ($rocmOutput) {
-                        # rocm-smi output format: "GPU Memory: XXXX(MB) / YYYY(MB)"
                         $match = $rocmOutput | Select-String "GPU Memory:" | Select-Object -First 1
                         if ($match) {
-                            # Extract total memory (second number)
                             $memMatch = [regex]::Matches($match.Line, '\d+')
                             if ($memMatch.Count -ge 2) {
-                                $totalMem = [int]$memMatch[1].Value
-                                $vramGB = [math]::Round($totalMem / 1024, 2)
+                                $vramGB = [math]::Round([int]$memMatch[1].Value / 1024, 2)
                                 $vramSource = "rocm-smi"
                             }
                         }
                     }
-                } catch {
-                    # rocm-smi not available
-                }
-            }
-            
-            # Intel Arc/iGPU: Check registry
-            elseif ($gpu.Name -like "*Intel*" -or $gpu.Name -like "*Arc*") {
+                } catch {}
+            } elseif ($_.Name -like "*Intel*" -or $_.Name -like "*Arc*") {
                 try {
-                    # Registry path for Intel GPU VRAM (qxvram is in bytes)
-                    $intelReg = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\*" `
-                        -Name "HardwareInformation.qxvram" -EA SilentlyContinue | 
-                        Where-Object { $_."HardwareInformation.qxvram" } |
-                        Select-Object -First 1
-                    
+                    $intelReg = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\*" -Name "HardwareInformation.qxvram" -EA SilentlyContinue | Where-Object { $_."HardwareInformation.qxvram" } | Select-Object -First 1
                     if ($intelReg -and $intelReg."HardwareInformation.qxvram") {
-                        $vramBytes = [int]$intelReg."HardwareInformation.qxvram"
-                        $vramGB = [math]::Round($vramBytes / 1GB, 2)
+                        $vramGB = [math]::Round([int]$intelReg."HardwareInformation.qxvram" / 1GB, 2)
                         $vramSource = "registry"
                     }
-                } catch {
-                    # Registry query failed
-                }
+                } catch {}
             }
-            
-            # Fallback to WMI if vendor tool failed
             if ($null -eq $vramGB -or $vramGB -eq 0) {
-                if ($gpu.AdapterRAM -and $gpu.AdapterRAM -gt 0) {
-                    $vramGB = [math]::Round($gpu.AdapterRAM / 1GB, 2)
+                if ($_.AdapterRAM -and $_.AdapterRAM -gt 0) {
+                    $vramGB = [math]::Round($_.AdapterRAM / 1GB, 2)
                     $vramSource = "WMI (unreliable)"
                     Write-Host "  VRAM: $vramGB GB ($vramSource - may be inaccurate)" -ForegroundColor Yellow
                 } else {
@@ -1037,25 +675,19 @@ function Show-SystemInfo {
             } else {
                 Write-Host "  VRAM: $vramGB GB ($vramSource)" -ForegroundColor Green
             }
-            
-            # Display status
-            $status = if ($gpu.Status -eq "OK") { "OK" } else { $gpu.Status }
+            $status = if ($_.Status -eq "OK") { "OK" } else { $_.Status }
             Write-Host "  Status: $status" -ForegroundColor $(if ($status -eq "OK") { "Green" } else { "Yellow" })
-            
             Write-Host ""
         }
     } else {
         Write-Log "No discrete GPU detected" "WARN"
     }
-    
     Read-Host "  Press Enter"
 }
 
+#endregion
 
-# ==============================================================================
-#  MAIN MENU
-# ==============================================================================
-
+#region Main Menu Loop
 
 $menuItems = @(
     "Create New VM",
@@ -1063,30 +695,26 @@ $menuItems = @(
     "Inject GPU Drivers (Auto-Detect)",
     "Complete Setup (VM + GPU + Drivers)",
     "Update VM Drivers (Auto-Detect)",
-    "List VMs & GPU Info",
+    "List VMs",
+    "Show Host GPU Info",
     "Copy VM Apps to Downloads",
     "Exit"
 )
-
-
 $selectedIndex = 0
-
 
 while ($true) {
     $selectedIndex = Select-Menu -Items $menuItems -Title "MAIN MENU"
     Write-Host ""
-    
     switch ($selectedIndex) {
         0 { Initialize-VM -Config (Get-VMConfig); Read-Host "`n  Press Enter" }
         1 { Set-GPUPartition; Read-Host "`n  Press Enter" }
         2 { Install-GPUDrivers; Read-Host "`n  Press Enter" }
         3 { Invoke-CompleteSetup; Read-Host "`n  Press Enter" }
         4 { Install-GPUDrivers; Read-Host "`n  Press Enter" }
-        5 { Show-SystemInfo }
-        6 { Copy-VMApps; Read-Host "`n  Press Enter" }
-        7 { Write-Log "Exiting..." "INFO"; exit }
+        5 { Show-VmInfo }
+        6 { Show-GpuInfo }
+        7 { Copy-VMApps; Read-Host "`n  Press Enter" }
+        8 { Write-Log "Exiting..." "INFO"; exit }
     }
-    
-    # Move to next menu item for convenience
     $selectedIndex = ($selectedIndex + 1) % $menuItems.Count
 }
