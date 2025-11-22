@@ -119,12 +119,12 @@ Set execution policy:
 
 Place this file in any folder. Example:
 
-    C:\VMTools\Optimized-Unified-VM-Manager.ps1
+    C:\VMTools\Unified-VM-Manager.ps1
 
 Optional folder structure if using app deployment:
 
     ScriptDirectory\
-    ├── Optimized-Unified-VM-Manager.ps1
+    ├── Unified-VM-Manager.ps1
     └── VM Apps\
         ├── Sunshine.zip
         ├── VB-Cable.zip
@@ -132,7 +132,7 @@ Optional folder structure if using app deployment:
 
 # 5. RUNNING THE MANAGER
 
-    PS> .\Optimized-Unified-VM-Manager.ps1
+    PS> .\Unified-VM-Manager.ps1
 
 The script will auto-elevate if required.
 
