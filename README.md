@@ -18,9 +18,7 @@ Unlike previous versions, this optimized edition is a **complete rewrite**, focu
 
 The result is the most accurate, complete, and resilient GPU-PV management system available for Hyper-V.
 
-====================================================================
 # TABLE OF CONTENTS
-====================================================================
 1. Overview
 2. System Requirements
 3. Features
@@ -42,9 +40,7 @@ The result is the most accurate, complete, and resilient GPU-PV management syste
 19. Advanced Configuration
 20. License & Disclaimer
 
-====================================================================
 # 1. OVERVIEW
-====================================================================
 
 The Optimized Unified VM Manager automates the full lifecycle of GPU-accelerated Hyper-V virtual machines:
 
@@ -67,9 +63,7 @@ The script works across:
 
 All GPU types work using the same **registry → INF → file discovery → injection** pipeline.
 
-====================================================================
 # 2. SYSTEM REQUIREMENTS
-====================================================================
 
 Operating System:
 • Windows 10 Pro/Enterprise 20H1+  
@@ -91,9 +85,7 @@ Software:
 • Administrator privileges
 • GPU drivers installed on host
 
-====================================================================
 # 3. FEATURES
-====================================================================
 
 • Full VM creation wizard with presets  
 • Complete GPU-PV partition management  
@@ -111,9 +103,7 @@ Software:
 • Complete error recovery system  
 • Multi-GPU support  
 
-====================================================================
 # 4. INSTALLATION
-====================================================================
 
 Enable Hyper-V:
 
@@ -136,17 +126,13 @@ Optional folder structure if using app deployment:
         ├── VB-Cable.zip
         └── VirtualAudio.zip
 
-====================================================================
 # 5. RUNNING THE MANAGER
-====================================================================
 
     PS> .\Optimized-Unified-VM-Manager.ps1
 
 The script will auto-elevate if required.
 
-====================================================================
 # 6. MAIN MENU AND NAVIGATION
-====================================================================
 
 Navigation uses arrow keys:
 
@@ -165,9 +151,7 @@ Main Menu Options:
 7. Copy VM Apps to Downloads  
 8. Exit  
 
-====================================================================
 # 7. VM CREATION SYSTEM
-====================================================================
 
 Preset types:
 
@@ -188,9 +172,7 @@ VM Characteristics:
 
 Every setting is validated, and error handling prevents partial VM creation.
 
-====================================================================
 # 8. GPU PARTITIONING SYSTEM
-====================================================================
 
 GPU-PV allows allocating percentages of a physical GPU to a VM.
 
@@ -211,9 +193,7 @@ Example 50% allocation:
 
 The VM must be powered off before applying changes.
 
-====================================================================
 # 9. AUTOMATIC GPU DRIVER DETECTION
-====================================================================
 
 The optimized script uses a multi-stage detection system:
 
@@ -228,9 +208,7 @@ The optimized script uses a multi-stage detection system:
 
 Works on systems with multiple GPUs.
 
-====================================================================
 # 10. INF PARSING & FILE DISCOVERY ARCHITECTURE
-====================================================================
 
 The INF parsing engine extracts:
 
@@ -261,9 +239,7 @@ This version improves:
 • Case-insensitive matching  
 • Multi-match grouping  
 
-====================================================================
 # 11. DRIVER INJECTION WORKFLOW (HOST → VM)
-====================================================================
 
 Steps:
 
@@ -282,9 +258,7 @@ Steps:
 
 Drivers install automatically on next VM boot.
 
-====================================================================
 # 12. VIRTUAL DISK MOUNTING & WINDOWS DETECTION
-====================================================================
 
 • Mount-VHD -NoDriveLetter  
 • Refresh disk info (Update-Disk)  
@@ -306,9 +280,7 @@ The optimized script also:
 • Detects non-Windows volumes  
 • Recovers from partially mounted states  
 
-====================================================================
 # 13. LOGGING SYSTEM
-====================================================================
 
 Each log entry:
 
@@ -324,9 +296,7 @@ X ERROR (red)
 
 Logging is used everywhere, including system operations, file copy progress, and error reporting.
 
-====================================================================
 # 14. VM APPLICATION DEPLOYMENT
-====================================================================
 
 If "VM Apps" folder exists, the script can copy .zip utilities directly into the Windows user's Downloads folder inside the VM.
 
@@ -338,9 +308,7 @@ Process:
 4. Script copies all zip files to:
    C:\Users\<User>\Downloads\VM Apps\
 
-====================================================================
 # 15. LIST VMs & HOST GPU INFO
-====================================================================
 
 VM list includes:
 
@@ -363,9 +331,7 @@ Host GPU list includes:
 
 Fallback: WMI AdapterRAM (less accurate)
 
-====================================================================
 # 16. SUPPORTED & UNSUPPORTED GPU-PV FEATURES
-====================================================================
 
 Supported:
 
@@ -382,9 +348,7 @@ Not Supported (GPU-PV limitations):
 • CUDA runtime libs (install inside VM)  
 • OpenGL extensions (emulated via DX12 → slower)  
 
-====================================================================
 # 17. TROUBLESHOOTING
-====================================================================
 
 == GPU missing in VM ==
 Cause: no partition / no drivers  
@@ -400,9 +364,7 @@ Fix: reinstall GPU drivers on host → reboot
 == Driver injection fails: not enough space ==
 Fix: expand virtual disk via Resize-VHD
 
-====================================================================
 # 18. POWERSHELL PROGRAMMATIC EXAMPLES
-====================================================================
 
 Examples include:
 
@@ -412,9 +374,7 @@ Examples include:
 • Changing partition percentage  
 • Setting custom storage locations  
 
-====================================================================
 # 19. ADVANCED CONFIGURATION
-====================================================================
 
 Options include:
 
@@ -424,13 +384,10 @@ Options include:
 • Manual driver injection  
 • Using multiple GPUs for separate VMs  
 
-====================================================================
 # 20. LICENSE & DISCLAIMER
-====================================================================
 
 Provided AS-IS with no warranty.  
 GPU-PV support depends on hardware, OS version, and driver versions.
 
 Use at your own risk and always back up important data before performing VM operations.
 
-====================================================================
