@@ -61,25 +61,30 @@ The script automatically requests administrator elevation if not already running
 The application presents an interactive menu system with arrow key navigation:
 
 ```
+  GPU Virtualization Manager
+  Manage and partition GPUs for Hyper-V virtual machines
+
   > MAIN MENU
-  |  (Use UP/DOWN arrows, ENTER to select)
+  |  Use UP/DOWN arrows, ENTER to select, ESC to cancel
   |
   |     Create New VM
-  |  >> Configure GPU Partition      [green highlight - currently selected]
+  |  >> Configure GPU Partition
   |     Inject GPU Drivers (Auto-Detect)
   |     Complete Setup (VM + GPU + Drivers)
   |     Update VM Drivers (Auto-Detect)
-  |     List VMs & GPU Info
+  |     List VMs
+  |     Show Host GPU Info
   |     Copy VM Apps to Downloads
   |     Exit
   |
-  >==========================================================================
+  >============================================================================
 ```
 
 **Navigation:**
 - **UP Arrow** - Move selection up (wraps to bottom)
 - **DOWN Arrow** - Move selection down (wraps to top)
 - **ENTER** - Confirm selection
+- **ESC** - Cancel current operation
 
 ### Logging Output
 
@@ -95,11 +100,11 @@ All operations produce timestamped, color-coded log messages:
 
 Example output:
 ```
-  [14:23:45] > GPU: NVIDIA RTX 4090                                    [Cyan]
-  [14:23:45] + Found INF: oem123.inf                                   [Green]
-  [14:23:46] > Reading INF file...                                     [Cyan]
-  [14:23:47] ! Could not find GPU in registry                          [Yellow]
-  [14:23:48] X INF file not found: C:\Windows\INF\oem456.inf          [Red]
+  [14:23:45] > GPU: NVIDIA RTX 4090
+  [14:23:45] + Found INF: oem123.inf
+  [14:23:46] > Reading INF file...
+  [14:23:47] ! Could not find GPU in registry
+  [14:23:48] X INF file not found: C:\Windows\INF\oem456.inf
 ```
 
 ## Menu Options Reference
@@ -112,7 +117,7 @@ Launches VM creation wizard with preset or custom configuration. Creates a Gener
 
 ```
   > VM CONFIGURATION
-  |  (Use UP/DOWN arrows, ENTER to select)
+  |  Use UP/DOWN arrows, ENTER to select, ESC to cancel
   |
   |     Gaming       | 16GB RAM, 8 CPU,  256GB Storage
   |  >> Development  | 8GB RAM,  4 CPU,  128GB Storage
@@ -132,6 +137,8 @@ Launches VM creation wizard with preset or custom configuration. Creates a Gener
 - Generation: 2 (UEFI)
 - Security: Secure Boot enabled, TPM 2.0 enabled
 - Checkpoints: Disabled
+- Integration Services: Guest Service Interface and VSS disabled
+- Enhanced Session Mode: Disabled (required for GPU-PV)
 - Boot order: DVD drive first, HDD second (allows Windows installation from ISO)
 
 **Example Output:**
@@ -139,14 +146,19 @@ Launches VM creation wizard with preset or custom configuration. Creates a Gener
 ```
   > CREATING VIRTUAL MACHINE
   [14:24:00] > VM: MyGameVM | RAM: 16GB | CPU: 8 | Storage: 256GB
+
   [14:24:00] | Creating VM configuration...
   [14:24:02] + Creating VM configuration...
   [14:24:02] | Configuring processor and memory...
   [14:24:03] + Configuring processor and memory...
-  [14:24:03] | Attaching DVD drive and setting boot order...
-  [14:24:04] + Attaching DVD drive and setting boot order...
-  [14:24:04] + Mounting ISO image...
-  [14:24:05] + Virtual machine created successfully
+  [14:24:03] | Applying security settings...
+  [14:24:04] + Applying security settings...
+  [14:24:04] + ISO attached
+
+  +----------------------------------------------------------------------+
+  |  VM CREATED: MyGameVM                                                |
+  +----------------------------------------------------------------------+
+  [14:24:05] + RAM: 16GB | CPU: 8 | Storage: 256GB
 ```
 
 ### 2. Configure GPU Partition
@@ -160,11 +172,13 @@ Adds GPU partition adapter to a VM and allocates a percentage of GPU resources (
   |  SELECT VIRTUAL MACHINE                                              |
   +========================================================================+
 
-  [1] Gaming-VM | State: Off | RAM: 16GB | CPU: 8 | GPU: None
-  [2] Dev-VM | State: Off | RAM: 8GB | CPU: 4 | GPU: 25%
-  [3] ML-VM | State: Running | RAM: 32GB | CPU: 12 | GPU: 60%
-  [4] < Cancel >
+  Gaming-VM | State: Off | RAM: 16GB | CPU: 8 | GPU: None
+  Dev-VM | State: Off | RAM: 8GB | CPU: 4 | GPU: 25%
+  ML-VM | State: Running | RAM: 32GB | CPU: 12 | GPU: 60%
+  < Cancel >
 ```
+
+The script automatically displays VM state, allocated RAM, CPU count, and current GPU allocation percentage. VMs must be powered off for GPU partition configuration.
 
 **User Input:**
 
@@ -175,10 +189,17 @@ Adds GPU partition adapter to a VM and allocates a percentage of GPU resources (
 **Example Output:**
 
 ```
-  [14:25:00] ~ CONFIGURING GPU PARTITION
-  [14:25:00] > VM: Gaming-VM
-  [14:25:01] > Setting GPU partition to 50%
-  [14:25:02] + GPU partition configured successfully
+  +========================================================================+
+  |  CONFIGURING GPU PARTITION                                           |
+  +========================================================================+
+  [14:25:00] > VM: Gaming-VM | Allocation: 50%
+
+  [14:25:01] | Configuring GPU...
+  [14:25:02] + Configuring GPU...
+
+  +----------------------------------------------------------------------+
+  |  GPU CONFIGURED: 50%                                                 |
+  +----------------------------------------------------------------------+
 ```
 
 ### 3. Inject GPU Drivers (Auto-Detect)
@@ -187,47 +208,52 @@ Automatically detects GPU drivers from host system and injects them into selecte
 
 **VM Selection:**
 
-Same as Configure GPU Partition - select target VM from list.
+Select target VM from list (same interface as Configure GPU Partition).
 
 **GPU Selection (Multi-GPU Systems):**
 
 ```
-  > SELECT GPU DEVICE
-  |
-  |  [1] NVIDIA GeForce RTX 4090
-  |      Provider: NVIDIA | Version: 32.0.15.8129
-  |
-  |  [2] NVIDIA GeForce RTX 4080 Super
-  |      Provider: NVIDIA | Version: 32.0.15.8129
-  |
-  |  [3] AMD Radeon RX 7900 XTX
-  |      Provider: AMD | Version: 24.10.1
-  |
-  |  Enter GPU number (1-3): 1
+  +========================================================================+
+  |  SELECT GPU DEVICE                                                   |
+  +========================================================================+
+
+  [1] NVIDIA GeForce RTX 4090
+       Provider: NVIDIA | Version: 32.0.15.8129
+
+  [2] NVIDIA GeForce RTX 4080 Super
+       Provider: NVIDIA | Version: 32.0.15.8129
+
+  [3] AMD Radeon RX 7900 XTX
+       Provider: AMD | Version: 24.10.1
+
+  Enter GPU number (1-3): 1
 ```
 
 **Process Output:**
 
 ```
-  [14:24:30] ~ ANALYZING GPU DRIVERS
-
+  +----------------------------------------------------------------------+
+  |  ANALYZING GPU DRIVERS                                               |
+  +----------------------------------------------------------------------+
   [14:24:30] > GPU: NVIDIA GeForce RTX 4090
   [14:24:30] > Provider: NVIDIA
   [14:24:30] > Version: 32.0.15.8129
 
-  [14:24:30] > Finding INF file from registry...
+  [14:24:30] | Finding INF file from registry...
   [14:24:31] + Found INF: oem123.inf
-  [14:24:31] > Reading INF file...
-  [14:24:31] > Parsing INF for file references...
+  [14:24:31] | Reading INF file...
+  [14:24:31] | Parsing INF for file references...
   [14:24:32] + Found 247 file references in INF
-  [14:24:32] > Locating files in system...
+
+  [14:24:32] | Locating files in system...
   [14:24:33] + Located 156 system files + 8 DriverStore folder(s)
 
-  [14:24:33] ~ COPYING DRIVERS
-
   [14:24:33] > Copying 8 DriverStore folders...
-  [14:24:34] + nv_dispi.inf_amd64_87654321 (1,245 files)
-  [14:24:35] + nvapi_dispi.inf_amd64_12345678 (823 files)
+
+  [14:24:34] + nv_dispi.inf_amd64_87654321
+        (1245 files)
+  [14:24:35] + nvapi_dispi.inf_amd64_12345678
+        (823 files)
   ...
 
   [14:24:40] > Copying 156 system files...
@@ -236,8 +262,9 @@ Same as Configure GPU Partition - select target VM from list.
   [14:24:40] + nvd3dum.dll
   ...
 
-  [14:24:55] ~ DRIVER INJECTION COMPLETE
-
+  +----------------------------------------------------------------------+
+  |  DRIVER INJECTION COMPLETE                                           |
+  +----------------------------------------------------------------------+
   [14:24:55] + Injected 156 files + 8 folders to Gaming-VM
 ```
 
@@ -264,19 +291,26 @@ Orchestrates the full workflow: VM creation, GPU partition configuration, and dr
 
   [VM creation process...]
 
-  GPU Allocation % (1-100): 50
+  GPU Allocation % (default: 50): 75
 ```
 
 **Typical workflow after Complete Setup:**
 
-```powershell
-1. [Complete Setup] - Creates VM + partitions GPU
-2. Open Hyper-V Manager - Start VM and install Windows OS
+```
+1. Complete Setup - Creates VM + partitions GPU + attempts driver injection
+2. If Windows not installed: Install Windows in Hyper-V Manager
 3. Complete Windows installation inside VM
 4. Shutdown VM completely
-5. [Inject GPU Drivers (Auto-Detect)] - Install drivers
+5. Run "Inject GPU Drivers (Auto-Detect)" - Install drivers
 6. Start VM - GPU drivers now loaded
 7. Install games/applications
+```
+
+**Note:** The script will automatically attempt driver injection after VM creation. If Windows is not yet installed, the script provides clear guidance:
+
+```
+  [14:25:10] ! Driver injection could not complete.
+  Please install Windows inside the VM first, then run driver injection (option 3).
 ```
 
 ### 5. Update VM Drivers (Auto-Detect)
@@ -294,64 +328,76 @@ PS> (Select GPU device)
 [Driver injection process runs again with new drivers]
 ```
 
-### 6. List VMs & GPU Info
+### 6. List VMs
 
-Displays comprehensive inventory of all VMs and host GPU information with VRAM accurately detected using vendor-specific tools.
+Displays comprehensive inventory of all VMs in a formatted table.
 
 **Example Output:**
 
 ```
-  ================================================================================
-                           HYPER-V VIRTUAL MACHINES
-  ================================================================================
-
+  +========================================================================+
+  |  HYPER-V VIRTUAL MACHINES                                            |
+  +========================================================================+
   [14:25:00] > Gathering VM info...
 
-  +----------------------------------------------------------------------+
-  |  VM: Gaming-VM
-  |  State: Running | RAM: 16GB | CPU: 8 | Storage: 256GB | GPU: 50%
-  +----------------------------------------------------------------------+
+  +------------------+----------+---------+---------+-----------+---------+
+  | VM               | State    | RAM(GB) | CPU     | Storage   | GPU     |
+  +------------------+----------+---------+---------+-----------+---------+
+  | Gaming-VM        | Running  | 16      | 8       | 256       | 50%     |
+  | Dev-VM           | Off      | 8       | 4       | 128       | None    |
+  | ML-VM            | Running  | 32      | 12      | 512       | 75%     |
+  +------------------+----------+---------+---------+-----------+---------+
 
-  +----------------------------------------------------------------------+
-  |  VM: Dev-VM
-  |  State: Off | RAM: 8GB | CPU: 4 | Storage: 128GB | GPU: None
-  +----------------------------------------------------------------------+
+  Press Enter
+```
 
-  +----------------------------------------------------------------------+
-  |  VM: ML-VM
-  |  State: Running | RAM: 32GB | CPU: 12 | Storage: 512GB | GPU: 60%
-  +----------------------------------------------------------------------+
+**Displayed Information:**
+- VM name
+- Current state (Running/Off/Saved)
+- Allocated RAM in GB
+- CPU core count
+- Storage size in GB
+- GPU allocation percentage (or "None" if no GPU partition)
 
-  ================================================================================
-                            HOST GPU INFORMATION
-  ================================================================================
+### 7. Show Host GPU Info
+
+Displays detailed information about all GPUs on the host system with accurate VRAM detection using vendor-specific tools.
+
+**Example Output:**
+
+```
+  +========================================================================+
+  |  HOST GPU INFORMATION                                                |
+  +========================================================================+
 
   GPU: NVIDIA GeForce RTX 4090
   Driver Version: 32.0.15.8129
-  Driver Date: 11/01/2024
+  Driver Date: 20241101000000.000000-000
   VRAM: 24.0 GB (nvidia-smi)
   Status: OK
 
   GPU: AMD Radeon RX 7900 XTX
   Driver Version: 24.10.1
-  Driver Date: 10/15/2024
+  Driver Date: 20241015000000.000000-000
   VRAM: 24.0 GB (rocm-smi)
   Status: OK
 
   GPU: Intel Arc A770
   Driver Version: 31.0.101.5272
-  Driver Date: 10/20/2024
+  Driver Date: 20241020000000.000000-000
   VRAM: 8.0 GB (registry)
   Status: OK
+
+  Press Enter
 ```
 
 **VRAM Detection Methods:**
 - **NVIDIA:** `nvidia-smi --query-gpu=memory.total` (most accurate)
 - **AMD:** `rocm-smi --showmeminfo` (when ROCm installed)
 - **Intel Arc/iGPU:** Windows Registry `HardwareInformation.qxvram` (always available)
-- **Fallback:** WMI `AdapterRAM` (unreliable for >4GB GPUs)
+- **Fallback:** WMI `AdapterRAM` (unreliable for >4GB GPUs, flagged with warning)
 
-### 7. Copy VM Apps to Downloads
+### 8. Copy VM Apps to Downloads
 
 Copies application zip files from "VM Apps" folder (in script directory) to VM's Downloads folder. Requires VM to be powered off with Windows installed.
 
@@ -376,21 +422,94 @@ Same as other VM operations - select target VM from list.
   +========================================================================+
   |  COPYING VM APPLICATIONS                                             |
   +========================================================================+
-
   [14:25:30] > Target: Gaming-VM
+
   [14:25:31] > Found 3 app(s)
-  [14:25:32] > Detecting user account...
+
+  [14:25:32] | Detecting user account...
   [14:25:33] > Copying apps...
   [14:25:33] + Sunshine.zip
   [14:25:34] + VB-Cable.zip
   [14:25:34] + VirtualAudio.zip
 
-  COPIED: 3/3 files
-
+  +----------------------------------------------------------------------+
+  |  COPIED: 3/3 files                                                   |
+  +----------------------------------------------------------------------+
   [14:25:35] > Location: Users\Gaming\Downloads\VM Apps
 ```
 
 **Files Copied To:** `C:\Users\[Username]\Downloads\VM Apps\`
+
+## Features and Improvements
+
+### Enhanced Error Handling
+
+The script uses comprehensive error handling with the `Invoke-WithErrorHandling` function:
+
+```powershell
+$result = Invoke-WithErrorHandling -OperationName "Stop VM" -ScriptBlock {
+    Stop-VM $VMName -Force -EA Stop
+} -SuccessMessage "VM stopped successfully" -OnError {
+    Write-Log "Failed to stop VM gracefully, forcing shutdown..." "WARN"
+}
+```
+
+All operations return success/failure status, allowing graceful degradation and clear user feedback.
+
+### Spinner with Conditions
+
+Long-running operations show animated spinners with timeout handling:
+
+```powershell
+Show-SpinnerWithCondition -Message "Shutting down VM" -Condition {
+    (Get-VM $VMName).State -eq "Off"
+} -TimeoutSeconds 60 -SuccessMessage "VM shut down successfully"
+```
+
+The spinner displays elapsed time and automatically exits when the condition is met or timeout occurs.
+
+### Validated User Input
+
+All user input is validated before processing:
+
+```powershell
+$ramGB = Get-ValidatedInput -Prompt "RAM in GB" -Validator {
+    param($v)
+    [int]::TryParse($v, [ref]$null) -and [int]$v -gt 0
+} -ErrorMessage "Please enter a valid positive number"
+```
+
+This prevents invalid input from causing script failures.
+
+### Safe VM State Management
+
+The script ensures VMs are in the correct state before operations:
+
+```powershell
+function Stop-VMSafe {
+    param([string]$VMName)
+    # Attempts graceful shutdown first
+    # Falls back to forced shutdown if timeout
+    # Returns $true on success, $false on failure
+}
+```
+
+### Optimized Menu Navigation
+
+The menu system uses arrow key navigation with visual highlighting:
+- Green highlight shows current selection
+- ESC key cancels and returns to previous menu
+- Menu items wrap around (bottom to top, top to bottom)
+
+### Consistent UI Formatting
+
+All operations use standardized box formatting:
+
+```powershell
+Write-Box "OPERATION NAME"  # Creates bordered title
+Write-Log "Message" "INFO"   # Color-coded timestamped log
+Show-Spinner "Processing..." # Animated progress indicator
+```
 
 ## Known Limitations
 
@@ -444,26 +563,22 @@ Not supported by GPU-PV architecture:
 ### Gaming VM Setup
 
 ```powershell
-# Step 1: Create VM
-Select "Create New VM" from main menu
+# Step 1: Complete Setup
+Select "Complete Setup (VM + GPU + Drivers)" from main menu
 Select "Gaming" preset
 VM Name: GamingVM
 ISO Path: C:\ISOs\Windows11.iso
+GPU Allocation: 50%
 
 # Step 2: Install Windows inside VM
 Open Hyper-V Manager, start GamingVM
 Complete Windows installation
 
-# Step 3: Inject GPU drivers
+# Step 3: Inject GPU drivers (if not done automatically)
 Select "Inject GPU Drivers (Auto-Detect)"
 Select GamingVM from list
 Select NVIDIA RTX 4090
 [Driver injection completes]
-
-# Step 4: Configure GPU allocation
-Select "Configure GPU Partition"
-Select GamingVM
-GPU Allocation: 50
 
 # Result: Gaming VM with GPU-accelerated DirectX rendering
 ```
@@ -606,9 +721,35 @@ PS> Restart-Computer
 # Expand VM virtual disk
 PS> $vm = Get-VM MyVM
 PS> $disk = Get-VHD -Path $vm.HardDrives[0].Path
-PS> Resize-VirtualDisk -Path $disk.Path -SizeBytes 500GB
+PS> Resize-VHD -Path $disk.Path -SizeBytes 500GB
 
-# Or delete unused files inside VM to free space
+# Inside VM, expand partition to use new space:
+# Open Disk Management
+# Right-click partition -> Extend Volume
+```
+
+### VM Won't Start After GPU Configuration
+
+**Symptom:** VM fails to start or crashes immediately after GPU partition configuration
+
+**Cause:** Incompatible VM configuration or insufficient host resources
+
+**Resolution:**
+
+```powershell
+# Verify host has sufficient resources
+PS> Get-WmiObject Win32_VideoController | Select AdapterRAM
+
+# Check VM settings
+PS> Get-VMGpuPartitionAdapter -VMName MyVM
+
+# Try reducing GPU allocation
+Select "Configure GPU Partition"
+Reduce percentage to 25% or 30%
+
+# Verify Enhanced Session Mode is disabled
+PS> Get-VMHost | Select EnableEnhancedSessionMode
+# Should be False
 ```
 
 ## PowerShell Examples
@@ -616,7 +757,7 @@ PS> Resize-VirtualDisk -Path $disk.Path -SizeBytes 500GB
 ### Programmatic VM Creation
 
 ```powershell
-# Create VM without UI
+# Create VM without UI (requires importing script functions)
 $config = @{
     Name = "DataVM"
     RAM = 16
@@ -626,6 +767,7 @@ $config = @{
     ISO = $null
 }
 
+# Call the Initialize-VM function (defined in script)
 $vmName = Initialize-VM -Config $config
 ```
 
@@ -637,9 +779,9 @@ $vms = Get-VM
 
 foreach ($vm in $vms) {
     $gpuAdapter = Get-VMGpuPartitionAdapter $vm.Name -ErrorAction SilentlyContinue
-    
+
     if ($gpuAdapter) {
-        $percent = [math]::Round(($gpuAdapter.MaxPartitionVRAM / 1.0e+09) * 100)
+        $percent = [math]::Round(($gpuAdapter.MaxPartitionVRAM / 1000000000) * 100)
         Write-Host "$($vm.Name): $percent% GPU"
     } else {
         Write-Host "$($vm.Name): No GPU partition"
@@ -665,7 +807,7 @@ foreach ($gpu in $gpus) {
     Write-Host "Name: $($gpu.DeviceName)"
     Write-Host "Driver: $($gpu.DriverVersion)"
     Write-Host "Provider: $($gpu.DriverProviderName)"
-    
+
     # Try NVIDIA
     if ($gpu.DeviceName -like "*NVIDIA*") {
         $vram = nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
@@ -691,12 +833,39 @@ Provider: AMD
 
 ## Technical Architecture
 
+### Core Logging and UI System
+
+The script uses a modular helper system for consistent UI presentation:
+
+```powershell
+Write-Log "Message" "INFO"        # Timestamped colored output
+Write-Box "Title"                 # Bordered title boxes
+Show-Banner                       # Application header
+Show-Spinner "Task" 2             # Animated progress (2 seconds)
+Show-SpinnerWithCondition         # Conditional spinner with timeout
+```
+
+### Menu System Architecture
+
+Interactive menus use Windows Console API for arrow key navigation:
+
+```powershell
+function Select-Menu {
+    # Real-time cursor positioning
+    # Arrow key event handling
+    # Visual highlighting
+    # ESC cancellation support
+}
+```
+
+Menus automatically wrap selections and provide visual feedback.
+
 ### GPU Device Detection
 
 GPUs discovered via WMI `Win32_PnPSignedDriver` class, filtered by Display devices. Vendor-agnostic approach works with any registered display adapter.
 
 ```powershell
-$gpuDrivers = Get-WmiObject Win32_PnPSignedDriver -ErrorAction SilentlyContinue | 
+$gpuDrivers = Get-WmiObject Win32_PnPSignedDriver -EA SilentlyContinue | 
     Where-Object { $_.DeviceClass -eq "Display" }
 ```
 
@@ -706,13 +875,12 @@ Windows stores driver metadata in registry at `HKLM:\SYSTEM\CurrentControlSet\Co
 
 ```powershell
 $registryPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-foreach ($subkey in (Get-ChildItem $registryPath)) {
-    $props = Get-ItemProperty -Path $subkey.PSPath
-    if ($props.MatchingDeviceId -like "*GPU-ID*") {
-        $infFilePath = "C:\Windows\INF\$($props.InfPath)"
-        break
+$infFileName = (Get-ChildItem -Path $registryPath -EA SilentlyContinue | ForEach-Object {
+    $props = Get-ItemProperty -Path $_.PSPath -EA SilentlyContinue
+    if ($props.MatchingDeviceId -and ($GPU.DeviceID -like "*$($props.MatchingDeviceId)*")) {
+        $props.InfPath
     }
-}
+}) | Select-Object -First 1
 ```
 
 ### INF File Parsing
@@ -720,16 +888,20 @@ foreach ($subkey in (Get-ChildItem $registryPath)) {
 INF files are parsed to extract referenced driver files using regex patterns for .sys, .dll, .exe, .cat, .inf, .bin, .vp, .cpa files:
 
 ```powershell
-$filePatterns = @('[\\w\\-\\.]+\\.sys', '[\\w\\-\\.]+\\.dll', '[\\w\\-\\.]+\\.exe', '[\\w\\-\\.]+\\.cat')
-$infContent = Get-Content $infFilePath -Raw
-foreach ($pattern in $filePatterns) {
-    $matches = [regex]::Matches($infContent, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-    foreach ($match in $matches) {
-        if (-not ($referencedFiles -contains $match.Value)) {
-            $referencedFiles += $match.Value
-        }
-    }
-}
+$filePatterns = @(
+    '[\w\-\.]+\.sys',
+    '[\w\-\.]+\.dll',
+    '[\w\-\.]+\.exe',
+    '[\w\-\.]+\.cat',
+    '[\w\-\.]+\.inf',
+    '[\w\-\.]+\.bin',
+    '[\w\-\.]+\.vp',
+    '[\w\-\.]+\.cpa'
+)
+
+$referencedFiles = $filePatterns | ForEach-Object {
+    [regex]::Matches($infContent, $_, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+} | ForEach-Object { $_.Value } | Sort-Object -Unique
 ```
 
 ### Multi-Location File Discovery
@@ -755,8 +927,8 @@ $partition = Get-Partition -DiskNumber $mounted.DiskNumber |
     Select-Object -First 1
 $mountPoint = "C:\Temp\VMMount_$(Get-Random)"
 New-Item $mountPoint -ItemType Directory -Force | Out-Null
-Add-PartitionAccessPath -DiskNumber $mounted.DiskNumber -PartitionNumber $partition.PartitionNumber -AccessPath $mountPoint
-Test-Path "$mountPoint\Windows" # Verify Windows installation
+Add-PartitionAccessPath -DiskNumber $mounted.DiskNumber `
+    -PartitionNumber $partition.PartitionNumber -AccessPath $mountPoint
 ```
 
 ### Driver Installation
@@ -768,7 +940,8 @@ $hostDriverStorePath = "$mountPoint\Windows\System32\HostDriverStore\FileReposit
 New-Item -Path $hostDriverStorePath -ItemType Directory -Force | Out-Null
 foreach ($storeFolder in $driverData.StoreFolders) {
     $folderName = Split-Path -Leaf $storeFolder
-    Copy-Item -Path $storeFolder -Destination "$hostDriverStorePath\$folderName" -Recurse -Force
+    Copy-Item -Path $storeFolder `
+        -Destination "$hostDriverStorePath\$folderName" -Recurse -Force
 }
 ```
 
@@ -785,7 +958,8 @@ foreach ($file in $driverData.Files) {
 ### Clean Unmounting
 
 ```powershell
-Remove-PartitionAccessPath -DiskNumber $mounted.DiskNumber -PartitionNumber $partition.PartitionNumber -AccessPath $mountPoint
+Remove-PartitionAccessPath -DiskNumber $mounted.DiskNumber `
+    -PartitionNumber $partition.PartitionNumber -AccessPath $mountPoint
 Dismount-VHD $VHDPath
 Remove-Item $mountPoint -Recurse -Force
 ```
@@ -796,14 +970,17 @@ Allocates GPU resources via partition values (1-100% percentage):
 
 ```powershell
 $percentage = 50
-$maxValue = [int](($percentage / 100) * 1.0e+09)    # 500,000,000
+$maxValue = [int](($percentage / 100) * 1000000000)    # 500,000,000
 $optimalValue = $maxValue - 1
+
 Set-VMGpuPartitionAdapter $VMName `
     -MinPartitionVRAM 1 -MaxPartitionVRAM $maxValue -OptimalPartitionVRAM $optimalValue `
     -MinPartitionEncode 1 -MaxPartitionEncode $maxValue -OptimalPartitionEncode $optimalValue `
     -MinPartitionDecode 1 -MaxPartitionDecode $maxValue -OptimalPartitionDecode $optimalValue `
     -MinPartitionCompute 1 -MaxPartitionCompute $maxValue -OptimalPartitionCompute $optimalValue
-Set-VM $VMName -GuestControlledCacheTypes $true -LowMemoryMappedIoSpace 1GB -HighMemoryMappedIoSpace 32GB
+
+Set-VM $VMName -GuestControlledCacheTypes $true `
+    -LowMemoryMappedIoSpace 1GB -HighMemoryMappedIoSpace 32GB
 ```
 
 | Partition Type | Controls |
@@ -812,28 +989,6 @@ Set-VM $VMName -GuestControlledCacheTypes $true -LowMemoryMappedIoSpace 1GB -Hig
 | Encode | Hardware video encoding |
 | Decode | Hardware video decoding |
 | Compute | Compute/CUDA operations |
-
-### Virtual Disk Mounting Sequence
-
-```powershell
-Mount-VHD -NoDriveLetter                    # Mount without drive letter
-Update-Disk -DiskNumber $num                # Refresh partition info
-Get-Partition -DiskNumber $num              # Enumerate partitions
-Add-PartitionAccessPath                     # Mount to temporary folder
-Test-Path "$mount\Windows"                  # Verify OS installation
-Remove-PartitionAccessPath                  # Unmount partition
-Dismount-VHD -Path $vhd                    # Dismount VHD
-Remove-Item $mount -Recurse -Force         # Clean temporary folder
-```
-
-### GPU Partition Value Calculation
-
-```powershell
-# For 50% GPU allocation:
-$percentage = 50
-$maxValue = [int](($percentage / 100) * 1.0e+09)  # 500,000,000
-# Applied to VRAM, Encode, Decode, Compute
-```
 
 ### Memory-Mapped I/O Configuration
 
@@ -853,8 +1008,8 @@ Maps physical GPU memory into guest VM's address space for direct GPU communicat
 By default, VMs stored in `C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\`. To use different path:
 
 ```powershell
-# During VM creation:
-PS> Storage Path: D:\Hyper-V\VMs\MyVM.vhdx
+# During VM creation (Custom Configuration):
+PS> Storage Path: D:\Hyper-V\VMs\
 
 # Or programmatically:
 $config.Path = "D:\Hyper-V\VMs\"
@@ -864,12 +1019,25 @@ $vmName = Initialize-VM -Config $config
 ### Changing GPU Allocation After VM Creation
 
 ```powershell
+# Ensure VM is powered off
 $vmName = "GamingVM"
-$newPercent = 75
 if ((Get-VM $vmName).State -ne "Off") {
     Stop-VM $vmName -Force
 }
-Set-GPUPartition -VMName $vmName -Percentage $newPercent
+
+# Reconfigure GPU partition
+Remove-VMGpuPartitionAdapter -VMName $vmName
+Add-VMGpuPartitionAdapter -VMName $vmName
+
+$newPercent = 75
+$maxValue = [int](($newPercent / 100) * 1000000000)
+$optimalValue = $maxValue - 1
+
+Set-VMGpuPartitionAdapter $vmName `
+    -MinPartitionVRAM 1 -MaxPartitionVRAM $maxValue -OptimalPartitionVRAM $optimalValue `
+    -MinPartitionEncode 1 -MaxPartitionEncode $maxValue -OptimalPartitionEncode $optimalValue `
+    -MinPartitionDecode 1 -MaxPartitionDecode $maxValue -OptimalPartitionDecode $optimalValue `
+    -MinPartitionCompute 1 -MaxPartitionCompute $maxValue -OptimalPartitionCompute $optimalValue
 ```
 
 ### Viewing VM Configuration
@@ -880,19 +1048,80 @@ Write-Host "Name: $($vm.Name)"
 Write-Host "State: $($vm.State)"
 Write-Host "RAM: $([math]::Round($vm.MemoryAssigned / 1GB)) GB"
 Write-Host "CPUs: $($vm.ProcessorCount)"
+
 $gpu = Get-VMGpuPartitionAdapter -VMName "GamingVM" -ErrorAction SilentlyContinue
 if ($gpu) {
-    $percent = [math]::Round(($gpu.MaxPartitionVRAM / 1.0e+09) * 100)
+    $percent = [math]::Round(($gpu.MaxPartitionVRAM / 1000000000) * 100)
     Write-Host "GPU: $percent%"
 }
 ```
 
+### Script Regions and Code Organization
+
+The script is organized into logical regions for maintainability:
+
+```powershell
+#region Core Logging and UI Helpers
+# Write-Log, Write-Box, Show-Banner, Show-Spinner, etc.
+#endregion
+
+#region Menu and Selection Helpers
+# Select-Menu, Get-ValidatedInput, Confirm-Action
+#endregion
+
+#region VM Operations Helpers
+# Select-VM, Format-VMMenuItem, Stop-VMSafe, Test-VMState
+#endregion
+
+#region Disk Operations Helpers
+# Mount-VMDisk, Dismount-VMDisk, New-DirectorySafe
+#endregion
+
+#region GPU Operations Helpers
+# Select-GPUDevice, Copy-ItemWithLogging, Get-DriverFiles
+#endregion
+
+#region VM Configuration and Setup
+# Get-VMConfig, Initialize-VM, Set-GPUPartition, Install-GPUDrivers
+# Copy-VMApps, Invoke-CompleteSetup
+#endregion
+
+#region Information Display
+# Show-VmInfo, Show-GpuInfo
+#endregion
+
+#region Main Menu Loop
+# Interactive menu with navigation
+#endregion
+```
+
 ## Credits
 
-Built on GPU-PV (GPU Paravirtualization) technology by Microsoft for Hyper-V and Windows Server. Driver detection and injection architecture supports universal GPU support through vendor-agnostic INF registry resolution and file discovery. Extensively tested with NVIDIA GPUs; AMD Radeon and Intel Arc driver detection follow same registry and INF parsing mechanisms.
+Built on GPU-PV (GPU Paravirtualization) technology by Microsoft for Hyper-V and Windows Server. Driver detection and injection architecture supports universal GPU support through vendor-agnostic INF registry resolution and file discovery. 
+
+Extensively tested with NVIDIA GPUs; AMD Radeon and Intel Arc driver detection follow same registry and INF parsing mechanisms.
+
+**Script Architecture:** Modular PowerShell design with region-based code organization, comprehensive error handling, and interactive menu system using Windows Console API.
 
 ## License
 
 Provided as-is for personal and educational use. No warranty. Use at your own risk.
 
 **Disclaimer:** GPU virtualization depends on compatible hardware and may not work with all GPU models/driver versions. Application compatibility varies - tool automates initial driver setup but cannot prevent per-app issues or missing dependencies. Always backup important data before VM operations.
+
+## Changelog
+
+### Latest Version (Optimized)
+
+**Improvements:**
+- Enhanced error handling with `Invoke-WithErrorHandling` wrapper
+- Conditional spinner with timeout support (`Show-SpinnerWithCondition`)
+- Safe VM state management with `Stop-VMSafe` and `Test-VMState`
+- Validated input system with `Get-ValidatedInput`
+- Improved menu navigation with ESC cancellation support
+- Consistent UI formatting with standardized box borders
+- Optimized code organization with clear regions
+- Better VM selection interface showing state, RAM, CPU, and GPU info
+- Automatic Enhanced Session Mode disabling (required for GPU-PV)
+- Integration Services configuration (Guest Service Interface and VSS disabled)
+- Improved error messages with actionable guidance
