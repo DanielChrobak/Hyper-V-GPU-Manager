@@ -1,11 +1,10 @@
-# Unified VM Manager (Optimized Edition)
+# Unified VM Manager
 # Hyper-V GPU-PV Automation, Universal Driver Injection, and VM Provisioning
 
-The **Optimized Unified VM Manager** is a fully automated PowerShell-based Hyper-V management framework that provisions virtual machines, configures GPU partitioning (GPU-PV), performs vendor-agnostic GPU driver detection, and injects full driver packages directly into Windows VM disks.
+The **Unified VM Manager** is a fully automated PowerShell-based Hyper-V management framework that provisions virtual machines, configures GPU partitioning (GPU-PV), performs vendor-agnostic GPU driver detection, and injects full driver packages directly into Windows VM disks.
 
 Unlike previous versions, this optimized edition is a **complete rewrite**, focused on:
 
-• 100% reliable INF-based GPU driver extraction  
 • Accurate multi-vendor driver resolution (NVIDIA, AMD, Intel Arc/iGPU)  
 • Correct DriverStore folder identification and copy behavior  
 • Fully structured function architecture  
