@@ -66,6 +66,7 @@ All GPU types work using the same **registry → INF → file discovery → inje
 # 2. SYSTEM REQUIREMENTS
 
 Operating System:
+
 • Windows 10 Pro/Enterprise 20H1+  
 • Windows 11 Pro/Enterprise (recommended)  
 • Server 2019/2022 (with Desktop Experience)
@@ -76,12 +77,14 @@ Hyper-V:
 • Must support GPU-PV (modern Windows builds)
 
 Hardware:
+
 • CPU: 6-core minimum (8+ recommended)  
 • RAM: 16 GB minimum (32 GB+ recommended)  
 • GPU: Any modern GPU with WDDM 2.5+ driver  
 • Disk: 128 GB SSD minimum (NVMe recommended)
 
 Software:
+
 • PowerShell 5.1+
 • Administrator privileges
 • GPU drivers installed on host
