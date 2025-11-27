@@ -3,7 +3,11 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit
 }
 
+
+
 #region Core Logging and UI Helpers
+
+
 
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
@@ -11,6 +15,8 @@ function Write-Log {
     $icons = @{INFO='>'; SUCCESS='+'; WARN='!'; ERROR='X'; HEADER='~'}
     Write-Host "  [$((Get-Date).ToString('HH:mm:ss'))] $($icons[$Level]) $Message" -ForegroundColor $colors[$Level]
 }
+
+
 
 function Write-Box {
     param([string]$Text, [string]$Style = "=", [int]$Width = 80)
@@ -20,11 +26,15 @@ function Write-Box {
     if ($Style -eq "=") { Write-Host "" }
 }
 
+
+
 function Show-Banner {
     Clear-Host
     Write-Host "`n  GPU Virtualization Manager" -ForegroundColor Magenta
     Write-Host "  Manage and partition GPUs for Hyper-V virtual machines`n" -ForegroundColor Magenta
 }
+
+
 
 function Show-Spinner {
     param([string]$Message, [int]$Duration = 2)
@@ -35,6 +45,8 @@ function Show-Spinner {
     }
     Write-Host "`r  + $Message" -ForegroundColor Green
 }
+
+
 
 function Show-SpinnerWithCondition {
     param([string]$Message, [scriptblock]$Condition, [int]$TimeoutSeconds = 60, [string]$SuccessMessage = $null)
@@ -54,6 +66,8 @@ function Show-SpinnerWithCondition {
     return $false
 }
 
+
+
 function Invoke-WithErrorHandling {
     param(
         [scriptblock]$ScriptBlock,
@@ -72,9 +86,15 @@ function Invoke-WithErrorHandling {
     }
 }
 
+
+
 #endregion
 
+
+
 #region Menu and Selection Helpers
+
+
 
 function Select-Menu {
     param([string[]]$Items, [string]$Title = "MENU")
@@ -109,6 +129,8 @@ function Select-Menu {
     }
 }
 
+
+
 function Get-ValidatedInput {
     param([string]$Prompt, [scriptblock]$Validator = {$true}, [string]$ErrorMessage = "Invalid input. Please try again.", [string]$DefaultValue = $null)
     do {
@@ -123,6 +145,8 @@ function Get-ValidatedInput {
     } while ($true)
 }
 
+
+
 function Confirm-Action {
     param([string]$Message, [bool]$DefaultYes = $false)
     $response = Read-Host "  $Message (Y/N)"
@@ -132,9 +156,15 @@ function Confirm-Action {
     return $response -match "^[Yy]$"
 }
 
+
+
 #endregion
 
+
+
 #region VM Operations Helpers
+
+
 
 function Select-VM {
     param([string]$Title = "SELECT VIRTUAL MACHINE", [bool]$AllowRunning = $false)
@@ -147,11 +177,13 @@ function Select-VM {
     }
     $menuItems = @()
     $menuItems += $vms | ForEach-Object { Format-VMMenuItem $_ }
-    $menuItems += "< Cancel >"  # Ensure Cancel is always last and on its own line!
+    $menuItems += "< Cancel >"
     $selection = Select-Menu -Items $menuItems -Title $Title
     if ($selection -eq $null -or $selection -eq ($menuItems.Count - 1)) { return $null }
     return $vms[$selection]
 }
+
+
 
 function Format-VMMenuItem {
     param($VM)
@@ -169,6 +201,8 @@ function Format-VMMenuItem {
     return "$($VM.Name) | State: $($VM.State) | RAM: ${ram}GB | CPU: $($VM.ProcessorCount) | GPU: $gpu"
 }
 
+
+
 function Stop-VMSafe {
     param([string]$VMName)
     $vm = Get-VM $VMName -EA SilentlyContinue
@@ -185,6 +219,8 @@ function Stop-VMSafe {
     return $result.Success
 }
 
+
+
 function Test-VMState {
     param([string]$VMName, [string]$RequiredState = "Off")
     $vm = Get-VM $VMName -EA SilentlyContinue
@@ -198,9 +234,15 @@ function Test-VMState {
     return $vm.State -eq $RequiredState
 }
 
+
+
 #endregion
 
+
+
 #region Disk Operations Helpers
+
+
 
 function Mount-VMDisk {
     param([string]$VHDPath)
@@ -222,6 +264,8 @@ function Mount-VMDisk {
     throw $result.Error
 }
 
+
+
 function Dismount-VMDisk {
     param($MountInfo, [string]$VHDPath)
     if ($MountInfo.Mounted -and $MountInfo.Partition) {
@@ -231,14 +275,51 @@ function Dismount-VMDisk {
     if ($MountInfo.MountPoint) { Remove-Item $MountInfo.MountPoint -Recurse -Force -EA SilentlyContinue }
 }
 
+
+
 function New-DirectorySafe {
     param([string]$Path)
     if (!(Test-Path $Path)) { New-Item -Path $Path -ItemType Directory -Force -EA SilentlyContinue | Out-Null }
 }
 
+
+
 #endregion
 
+
+
 #region GPU Operations Helpers
+
+
+
+# Map Device Instance Path (from Get-VMHostPartitionableGpu) to friendly GPU name via Win32_VideoController
+function Get-GPUNameFromInstancePath {
+    param([string]$InstancePath)
+
+    if ([string]::IsNullOrWhiteSpace($InstancePath)) {
+        return $null
+    }
+
+    # Extract PCI VEN/DEV from instance path
+    # Example: \\?\PCI#VEN_10DE&DEV_2684&SUBSYS_... -> VEN_10DE, DEV_2684
+    if ($InstancePath -match 'VEN_([0-9A-Fa-f]{4})&DEV_([0-9A-Fa-f]{4})') {
+        $vendorId = $matches[1]
+        $deviceId = $matches[2]
+
+        # Match using Win32_VideoController PNPDeviceID
+        $gpu = Get-WmiObject Win32_VideoController -EA SilentlyContinue | Where-Object {
+            $_.PNPDeviceID -like "*VEN_$vendorId*" -and $_.PNPDeviceID -like "*DEV_$deviceId*"
+        } | Select-Object -First 1
+
+        if ($gpu -and -not [string]::IsNullOrWhiteSpace($gpu.Name)) {
+            return $gpu.Name
+        }
+    }
+
+    return $null
+}
+
+
 
 function Select-GPUDevice {
     Write-Box "SELECT GPU DEVICE"
@@ -263,6 +344,70 @@ function Select-GPUDevice {
     }
 }
 
+
+
+# Returns an object with InstancePath + FriendlyName, but Set-GPUPartition still uses InstancePath internally
+function Select-GPUForPartition {
+    Write-Box "SELECT GPU DEVICE FOR PARTITIONING"
+
+    $gpus = @(Get-VMHostPartitionableGpu -EA SilentlyContinue)
+    if (-not $gpus -or $gpus.Count -eq 0) {
+        Write-Log "No assignable GPUs found" "ERROR"
+        Write-Host ""
+        return $null
+    }
+
+    $gpuList = @()
+    for ($i=0; $i -lt $gpus.Count; $i++) {
+        $gpu = $gpus[$i]
+
+        # Officially, Name is the Device Instance path for Add-VMGpuPartitionAdapter -InstancePath[web:4][web:11]
+        $instancePath = $gpu.Name
+        if ([string]::IsNullOrWhiteSpace($instancePath)) {
+            $instancePath = $gpu.Id
+        }
+        if ([string]::IsNullOrWhiteSpace($instancePath)) {
+            $instancePath = "UNKNOWN_INSTANCE_PATH"
+        }
+
+        # Derive friendly GPU name from WMI
+        $friendlyName = Get-GPUNameFromInstancePath -InstancePath $instancePath
+        if ([string]::IsNullOrWhiteSpace($friendlyName)) {
+            # Fallback if mapping fails
+            $friendlyName = "GPU-$i"
+        }
+
+        $gpuList += [PSCustomObject]@{
+            Index        = $i
+            InstancePath = $instancePath
+            FriendlyName = $friendlyName
+        }
+
+        Write-Host "  [$($i + 1)] $friendlyName" -ForegroundColor Green
+        Write-Host "       Path: $instancePath" -ForegroundColor DarkGray
+    }
+
+    Write-Host ""
+    if ($gpuList.Count -eq 0) {
+        Write-Log "No valid GPU identifiers found" "ERROR"
+        return $null
+    }
+
+    $maxNum = $gpuList.Count
+    while ($true) {
+        $selection = Read-Host "  Enter GPU number (1-$maxNum)"
+        if ([int]::TryParse($selection, [ref]$null) -and [int]$selection -ge 1 -and [int]$selection -le $maxNum) {
+            $selected = $gpuList[[int]$selection - 1]
+            Write-Log "Selected GPU: $($selected.FriendlyName)" "SUCCESS"
+            Write-Host ""
+            return $selected
+        }
+        Write-Log "Please enter a valid number between 1 and $maxNum" "WARN"
+    }
+}
+
+
+
 function Copy-ItemWithLogging {
     param([string]$SourcePath, [string]$DestinationPath, [string]$ItemName, [bool]$Recurse = $false)
     $destDir = Split-Path -Parent $DestinationPath
@@ -276,6 +421,8 @@ function Copy-ItemWithLogging {
     } -OnError { Write-Log "! ${ItemName}: Skipped" "WARN" }
     return $result.Success
 }
+
+
 
 function Get-DriverFiles {
     param([Object]$GPU)
@@ -338,10 +485,19 @@ function Get-DriverFiles {
 }
 #endregion
 
+
+
 #region VM Configuration and Setup
 
+
+
 function Get-VMConfig {
-    $presets = @("Gaming       | 16GB RAM, 8 CPU,  256GB Storage","Development  | 8GB RAM,  4 CPU,  128GB Storage","ML Training  | 32GB RAM, 12 CPU, 512GB Storage","Custom Configuration")
+    $presets = @(
+        "Gaming       | 16GB RAM, 8 CPU,  256GB Storage",
+        "Development  | 8GB RAM,  4 CPU,  128GB Storage",
+        "ML Training  | 32GB RAM, 12 CPU, 512GB Storage",
+        "Custom Configuration"
+    )
     $presetData = @(
         @{Name="Gaming-VM"; RAM=16; CPU=8; Storage=256},
         @{Name="Dev-VM"; RAM=8; CPU=4; Storage=128},
@@ -353,18 +509,27 @@ function Get-VMConfig {
         $preset = $presetData[$choice]; Write-Host ""
         $name = Read-Host "  VM Name (default: $($preset.Name))"
         $iso = Read-Host "  ISO Path (Enter to skip)"; Write-Host ""
-        return @{Name=$(if ($name) { $name } else { $preset.Name }); RAM=$preset.RAM; CPU=$preset.CPU; Storage=$preset.Storage; Path="C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"; ISO=$iso}
+        return @{
+            Name    = $(if ($name) { $name } else { $preset.Name })
+            RAM     = $preset.RAM
+            CPU     = $preset.CPU
+            Storage = $preset.Storage
+            Path    = "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
+            ISO     = $iso
+        }
     }
     Write-Box "CUSTOM VM CONFIGURATION" "-"
     return @{
-        Name = Get-ValidatedInput -Prompt "VM Name" -Validator { param($v) ![string]::IsNullOrWhiteSpace($v) }
-        RAM = [int](Get-ValidatedInput -Prompt "RAM in GB" -Validator { param($v) [int]::TryParse($v, [ref]$null) -and [int]$v -gt 0 })
-        CPU = [int](Get-ValidatedInput -Prompt "CPU Cores" -Validator { param($v) [int]::TryParse($v, [ref]$null) -and [int]$v -gt 0 })
+        Name    = Get-ValidatedInput -Prompt "VM Name" -Validator { param($v) ![string]::IsNullOrWhiteSpace($v) }
+        RAM     = [int](Get-ValidatedInput -Prompt "RAM in GB" -Validator { param($v) [int]::TryParse($v, [ref]$null) -and [int]$v -gt 0 })
+        CPU     = [int](Get-ValidatedInput -Prompt "CPU Cores" -Validator { param($v) [int]::TryParse($v, [ref]$null) -and [int]$v -gt 0 })
         Storage = [int](Get-ValidatedInput -Prompt "Storage in GB" -Validator { param($v) [int]::TryParse($v, [ref]$null) -and [int]$v -gt 0 })
-        Path = "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
-        ISO = (Read-Host "  ISO Path (Enter to skip)")
+        Path    = "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
+        ISO     = (Read-Host "  ISO Path (Enter to skip)")
     }
 }
+
+
 
 function Initialize-VM {
     param($Config)
@@ -418,8 +583,16 @@ function Initialize-VM {
     if ($result.Success) { return $result.Result } else { return $null }
 }
 
+
+
 function Set-GPUPartition {
-    param([string]$VMName, [int]$Percentage = 0)
+    param(
+        [string]$VMName,
+        [int]$Percentage = 0,
+        [string]$InstancePath = $null,
+        [string]$GPUName = $null
+    )
+
     if (!$VMName) {
         $vm = Select-VM -Title "SELECT VM FOR GPU PARTITION" -AllowRunning $false
         if (!$vm) { return $false }
@@ -429,24 +602,52 @@ function Set-GPUPartition {
         Write-Log "VM not found: $VMName" "ERROR"
         return $false
     }
+
+    # 1) Ask GPU FIRST
+    if ([string]::IsNullOrWhiteSpace($InstancePath)) {
+        $gpuSelection = Select-GPUForPartition
+        if (-not $gpuSelection) {
+            Write-Log "No GPU selected" "ERROR"
+            return $false
+        }
+        $InstancePath = $gpuSelection.InstancePath
+        $GPUName      = $gpuSelection.FriendlyName
+    }
+
+    # 2) Then ask PERCENTAGE (if not supplied)
     if ($Percentage -eq 0) {
         Write-Host ""
         $Percentage = [int](Get-ValidatedInput -Prompt "GPU Allocation % (1-100)" -Validator { param($v) [int]::TryParse($v, [ref]$null) -and [int]$v -ge 1 -and [int]$v -le 100 } -ErrorMessage "Please enter a number between 1 and 100")
     }
     $Percentage = [Math]::Max(1, [Math]::Min(100, $Percentage))
+
+    if ([string]::IsNullOrWhiteSpace($GPUName)) {
+        $GPUName = Get-GPUNameFromInstancePath -InstancePath $InstancePath
+        if ([string]::IsNullOrWhiteSpace($GPUName)) {
+            $GPUName = "GPU"
+        }
+    }
+
     Write-Box "CONFIGURING GPU PARTITION"
-    Write-Log "VM: $VMName | Allocation: $Percentage%" "INFO"; Write-Host ""
+    Write-Log "VM: $VMName | GPU: $GPUName | Allocation: $Percentage%" "INFO"
+    Write-Log "Instance Path: $InstancePath" "INFO"; Write-Host ""
+
     if (!(Test-VMState -VMName $VMName -RequiredState "Off")) {
         Write-Log "Failed to stop VM" "ERROR"
         return $false
     }
+
     $result = Invoke-WithErrorHandling -OperationName "GPU Configuration" -ScriptBlock {
         Show-Spinner "Configuring GPU..." 2
-        Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue | Remove-VMGpuPartitionAdapter
-        Add-VMGpuPartitionAdapter $VMName
+        Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue | Remove-VMGpuPartitionAdapter -EA SilentlyContinue
+        Add-VMGpuPartitionAdapter -VMName $VMName -InstancePath $InstancePath
         $max = [int](($Percentage / 100) * 1000000000)
         $opt = $max - 1
-        Set-VMGpuPartitionAdapter $VMName -MinPartitionVRAM 1 -MaxPartitionVRAM $max -OptimalPartitionVRAM $opt -MinPartitionEncode 1 -MaxPartitionEncode $max -OptimalPartitionEncode $opt -MinPartitionDecode 1 -MaxPartitionDecode $max -OptimalPartitionDecode $opt -MinPartitionCompute 1 -MaxPartitionCompute $max -OptimalPartitionCompute $opt
+        Set-VMGpuPartitionAdapter $VMName `
+            -MinPartitionVRAM 1 -MaxPartitionVRAM $max -OptimalPartitionVRAM $opt `
+            -MinPartitionEncode 1 -MaxPartitionEncode $max -OptimalPartitionEncode $opt `
+            -MinPartitionDecode 1 -MaxPartitionDecode $max -OptimalPartitionDecode $opt `
+            -MinPartitionCompute 1 -MaxPartitionCompute $max -OptimalPartitionCompute $opt
         Set-VM $VMName -GuestControlledCacheTypes $true -LowMemoryMappedIoSpace 1GB -HighMemoryMappedIoSpace 32GB
         Write-Host ""
         Write-Box "GPU CONFIGURED: $Percentage%" "-"; Write-Host ""
@@ -454,6 +655,8 @@ function Set-GPUPartition {
     }
     return $result.Success
 }
+
+
 
 function Install-GPUDrivers {
     param([string]$VMName)
@@ -523,6 +726,8 @@ function Install-GPUDrivers {
     }
 }
 
+
+
 function Copy-VMApps {
     $vm = Select-VM -Title "SELECT VM FOR APP COPY" -AllowRunning $false
     if (!$vm) { return $false }
@@ -576,6 +781,8 @@ function Copy-VMApps {
     }
 }
 
+
+
 function Invoke-CompleteSetup {
     Write-Log "Starting complete setup..." "HEADER"; Write-Host ""
     $config = Get-VMConfig
@@ -586,8 +793,17 @@ function Invoke-CompleteSetup {
     $vmName = Initialize-VM -Config $config
     if (!$vmName) { return }
     Write-Host ""
+
+    # GPU FIRST
+    $gpuSelection = Select-GPUForPartition
+    if (-not $gpuSelection) {
+        Write-Log "GPU selection cancelled" "WARN"
+        return
+    }
+
+    # THEN PERCENTAGE
     $gpuPercent = Get-ValidatedInput -Prompt "GPU Allocation % (default: 50)" -Validator { param($v) [string]::IsNullOrWhiteSpace($v) -or ([int]::TryParse($v, [ref]$null) -and [int]$v -ge 1 -and [int]$v -le 100) } -DefaultValue "50"
-    $gpuResult = Set-GPUPartition -VMName $vmName -Percentage ([int]$gpuPercent)
+    $gpuResult = Set-GPUPartition -VMName $vmName -Percentage ([int]$gpuPercent) -InstancePath $gpuSelection.InstancePath -GPUName $gpuSelection.FriendlyName
     if (!$gpuResult) {
         Write-Log "GPU config failed" "ERROR"
         return
@@ -606,9 +822,15 @@ function Invoke-CompleteSetup {
     Write-Host ""
 }
 
+
+
 #endregion
 
+
+
 #region Information Display
+
+
 
 function Show-VmInfo {
     Write-Box "HYPER-V VIRTUAL MACHINES"
@@ -619,7 +841,6 @@ function Show-VmInfo {
         Read-Host "  Press Enter"
         return
     }
-    # Header
     $line = "+{0}+{1}+{2}+{3}+{4}+{5}+" -f ('-'*20),('-'*10),('-'*9),('-'*9),('-'*11),('-'*9)
     Write-Host "  $line" -ForegroundColor Cyan
     Write-Host ("  | {0,-18} | {1,-8} | {2,-7} | {3,-7} | {4,-9} | {5,-7} |" -f "VM", "State", "RAM(GB)", "CPU", "Storage", "GPU") -ForegroundColor Cyan
@@ -649,6 +870,8 @@ function Show-VmInfo {
     Write-Host ""
     Read-Host "  Press Enter"
 }
+
+
 
 function Show-GpuInfo {
     Write-Box "HOST GPU INFORMATION"
@@ -711,9 +934,15 @@ function Show-GpuInfo {
     Read-Host "  Press Enter"
 }
 
+
+
 #endregion
 
+
+
 #region Main Menu Loop
+
+
 
 $menuItems = @(
     "Create New VM",
@@ -727,6 +956,8 @@ $menuItems = @(
     "Exit"
 )
 $selectedIndex = 0
+
+
 
 while ($true) {
     $selectedIndex = Select-Menu -Items $menuItems -Title "MAIN MENU"
@@ -748,3 +979,7 @@ while ($true) {
     }
     $selectedIndex = ($selectedIndex + 1) % $menuItems.Count
 }
+
+
+
+#endregion
