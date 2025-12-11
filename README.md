@@ -415,7 +415,7 @@ ISO preserved: C:\ProgramData\HyperV-ISOs\Dev-VM-AutoInstall.iso
 ### Automated Installation
 The script creates a modified Windows installation ISO with `autounattend.xml` that:
 - **Partitioning:** Creates UEFI GPT layout (WINRE, EFI, MSR, Windows partitions)
-- **Automation:** Accepts EULA, skips locale screens, disables privacy prompts, etc
+- **Automation:** Accepts EULA, disables privacy prompts, etc
 - **Locale:** en-US (configurable by editing XML)
 - **User Interaction:** Edition selection and account creation still required
 - **Boot Prompt:** Uses `efisys_noprompt.bin` if available to skip boot menu
