@@ -400,7 +400,6 @@ ISO preserved: C:\ProgramData\HyperV-ISOs\Dev-VM-AutoInstall.iso
 
 5. Both VMs can now use the GPU (not simultaneously if total > 100%)
 
-Note: Total allocation can exceed 100%, but only one VM can use GPU at a time
 ```
 
 ---
