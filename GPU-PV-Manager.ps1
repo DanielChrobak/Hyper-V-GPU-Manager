@@ -243,12 +243,6 @@ function New-AutoInstallISO {
         Write-Box "AUTOMATED ISO CREATED" "-"
         Write-Log "ISO Path: $newISOPath" "SUCCESS"
         Write-Log "Size: $([math]::Round((Get-Item $newISOPath).Length / 1GB, 2)) GB" "SUCCESS"
-        Write-Host ""
-        Write-Host "  The VM will automatically:" -ForegroundColor Cyan
-        Write-Host "  - Partition and format the disk" -ForegroundColor Gray
-        Write-Host "  - Install Windows (you'll choose the edition)" -ForegroundColor Gray
-        Write-Host "  - Skip all OOBE screens except user creation" -ForegroundColor Gray
-        Write-Host ""
 
         return $newISOPath
 
