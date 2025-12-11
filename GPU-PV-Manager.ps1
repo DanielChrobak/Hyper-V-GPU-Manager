@@ -9,7 +9,265 @@ $script:Icons = @{INFO='>'; SUCCESS='+'; WARN='!'; ERROR='X'; HEADER='~'}
 $script:Spinner = @('|', '/', '-', '\')
 $script:VHDPath = "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"
 $script:MountBasePath = "C:\ProgramData\HyperV-Mounts"
+$script:ISOPath = "C:\ProgramData\HyperV-ISOs"
 $script:GPURegPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+#endregion
+
+
+#region Automated Installation
+function New-AutoUnattendXML {
+    param([string]$OutputPath)
+
+    $xml = @'
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+    <settings pass="windowsPE">
+        <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <SetupUILanguage>
+                <UILanguage>en-US</UILanguage>
+            </SetupUILanguage>
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UserLocale>en-US</UserLocale>
+        </component>
+        <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <UserData>
+                <AcceptEula>true</AcceptEula>
+                <FullName>User</FullName>
+                <Organization>Organization</Organization>
+            </UserData>
+            <DiskConfiguration>
+                <Disk wcm:action="add">
+                    <CreatePartitions>
+                        <CreatePartition wcm:action="add">
+                            <Order>1</Order>
+                            <Type>Primary</Type>
+                            <Size>100</Size>
+                        </CreatePartition>
+                        <CreatePartition wcm:action="add">
+                            <Order>2</Order>
+                            <Type>EFI</Type>
+                            <Size>100</Size>
+                        </CreatePartition>
+                        <CreatePartition wcm:action="add">
+                            <Order>3</Order>
+                            <Type>MSR</Type>
+                            <Size>128</Size>
+                        </CreatePartition>
+                        <CreatePartition wcm:action="add">
+                            <Order>4</Order>
+                            <Extend>true</Extend>
+                            <Type>Primary</Type>
+                        </CreatePartition>
+                    </CreatePartitions>
+                    <ModifyPartitions>
+                        <ModifyPartition wcm:action="add">
+                            <Order>1</Order>
+                            <PartitionID>1</PartitionID>
+                            <Label>WINRE</Label>
+                            <Format>NTFS</Format>
+                            <TypeID>DE94BBA4-06D1-4D40-A16A-BFD50179D6AC</TypeID>
+                        </ModifyPartition>
+                        <ModifyPartition wcm:action="add">
+                            <Order>2</Order>
+                            <PartitionID>2</PartitionID>
+                            <Label>System</Label>
+                            <Format>FAT32</Format>
+                        </ModifyPartition>
+                        <ModifyPartition wcm:action="add">
+                            <Order>3</Order>
+                            <PartitionID>3</PartitionID>
+                        </ModifyPartition>
+                        <ModifyPartition wcm:action="add">
+                            <Order>4</Order>
+                            <PartitionID>4</PartitionID>
+                            <Label>Windows</Label>
+                            <Format>NTFS</Format>
+                        </ModifyPartition>
+                    </ModifyPartitions>
+                    <DiskID>0</DiskID>
+                    <WillWipeDisk>true</WillWipeDisk>
+                </Disk>
+            </DiskConfiguration>
+            <ImageInstall>
+                <OSImage>
+                    <InstallTo>
+                        <DiskID>0</DiskID>
+                        <PartitionID>4</PartitionID>
+                    </InstallTo>
+                    <InstallToAvailablePartition>false</InstallToAvailablePartition>
+                </OSImage>
+            </ImageInstall>
+        </component>
+    </settings>
+    <settings pass="specialize">
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <ComputerName>*</ComputerName>
+        </component>
+    </settings>
+    <settings pass="oobeSystem">
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+                <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <HideLocalAccountScreen>false</HideLocalAccountScreen>
+                <ProtectYourPC>3</ProtectYourPC>
+                <SkipMachineOOBE>true</SkipMachineOOBE>
+                <SkipUserOOBE>true</SkipUserOOBE>
+            </OOBE>
+            <TimeZone>UTC</TimeZone>
+        </component>
+    </settings>
+</unattend>
+'@
+
+    $xml | Out-File -FilePath $OutputPath -Encoding UTF8 -Force
+}
+
+function New-AutoInstallISO {
+    param([string]$SourceISO, [string]$VMName)
+
+    Write-Box "AUTOMATED INSTALLATION SETUP" "-"
+    Write-Log "Creating automated installation ISO..." "INFO"
+    Write-Host ""
+
+    $isoMount = $null
+    $workDir = $null
+    $newISOPath = $null
+
+    try {
+        # Create ISO storage directory
+        New-Dir $script:ISOPath
+        $newISOPath = Join-Path $script:ISOPath "$VMName-AutoInstall.iso"
+
+        # Mount source ISO
+        Show-Spinner "Mounting source ISO..." 1
+        $isoMount = Mount-DiskImage -ImagePath $SourceISO -PassThru -EA Stop
+        $isoDrive = ($isoMount | Get-Volume).DriveLetter
+        if (!$isoDrive) { throw "Could not get ISO drive letter" }
+        $isoRoot = "${isoDrive}:"
+        Write-Log "ISO mounted at $isoRoot" "SUCCESS"
+
+        # Create working directory
+        $workDir = Join-Path $env:TEMP "HyperV-ISO-$VMName-$(Get-Random)"
+        New-Dir $workDir
+        Write-Log "Working directory: $workDir" "INFO"
+
+        # Copy ISO contents
+        Write-Host ""
+        Write-Log "Copying ISO contents (this may take a few minutes)..." "INFO"
+        Show-Spinner "Copying files..." 3
+        Copy-Item -Path "$isoRoot\*" -Destination $workDir -Recurse -Force -EA Stop
+
+        # Remove read-only attributes
+        Get-ChildItem $workDir -Recurse | ForEach-Object { $_.Attributes = $_.Attributes -band (-bnot [System.IO.FileAttributes]::ReadOnly) }
+        Write-Log "ISO contents copied successfully" "SUCCESS"
+
+        # Create autounattend.xml
+        Write-Host ""
+        Show-Spinner "Creating autounattend.xml..." 1
+        $autoUnattendPath = Join-Path $workDir "autounattend.xml"
+        New-AutoUnattendXML -OutputPath $autoUnattendPath
+        Write-Log "autounattend.xml created" "SUCCESS"
+
+        # Dismount source ISO
+        Show-Spinner "Dismounting source ISO..." 1
+        Dismount-DiskImage -ImagePath $SourceISO -EA SilentlyContinue | Out-Null
+        $isoMount = $null
+
+        # Create new ISO using oscdimg
+        Write-Host ""
+        Write-Log "Building new ISO with automated installation..." "INFO"
+
+        # Find oscdimg.exe
+        $oscdimgPaths = @(
+            "C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe",
+            "C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\x86\Oscdimg\oscdimg.exe",
+            "C:\Program Files\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe"
+        )
+
+        $oscdimg = $oscdimgPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+        if (!$oscdimg) {
+            Write-Log "oscdimg.exe not found - Windows ADK required" "WARN"
+            Write-Host ""
+            Write-Host "  Windows Assessment and Deployment Kit (ADK) is required to create ISO files." -ForegroundColor Yellow
+            Write-Host "  Download from: https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "  Alternatively, manually copy autounattend.xml to your installation media." -ForegroundColor Cyan
+            Write-Host "  Location: $autoUnattendPath" -ForegroundColor Cyan
+            Write-Host ""
+
+            # Clean up but keep autounattend.xml
+            if (Test-Path $autoUnattendPath) {
+                $desktopPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "autounattend.xml"
+                Copy-Item $autoUnattendPath $desktopPath -Force
+                Write-Log "autounattend.xml saved to Desktop" "SUCCESS"
+            }
+
+            return $null
+        }
+
+        # Get boot sector files
+        $etfsboot = Join-Path $workDir "boot\etfsboot.com"
+        $efisys = Join-Path $workDir "efi\microsoft\boot\efisys.bin"
+
+        if (!(Test-Path $etfsboot) -or !(Test-Path $efisys)) {
+            throw "Boot files not found in ISO"
+        }
+
+        Show-Spinner "Building ISO (this may take several minutes)..." 5
+
+        $oscdimgArgs = @(
+            '-m',
+            '-o',
+            '-u2',
+            '-udfver102',
+            "-bootdata:2#p0,e,b`"$etfsboot`"#pEF,e,b`"$efisys`"",
+            "`"$workDir`"",
+            "`"$newISOPath`""
+        )
+
+        $process = Start-Process -FilePath $oscdimg -ArgumentList $oscdimgArgs -Wait -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\oscdimg-out.txt" -RedirectStandardError "$env:TEMP\oscdimg-err.txt"
+
+        if ($process.ExitCode -ne 0) {
+            $errMsg = Get-Content "$env:TEMP\oscdimg-err.txt" -Raw -EA SilentlyContinue
+            throw "oscdimg failed with exit code $($process.ExitCode): $errMsg"
+        }
+
+        if (!(Test-Path $newISOPath)) {
+            throw "ISO file was not created"
+        }
+
+        Write-Host ""
+        Write-Box "AUTOMATED ISO CREATED" "-"
+        Write-Log "ISO Path: $newISOPath" "SUCCESS"
+        Write-Log "Size: $([math]::Round((Get-Item $newISOPath).Length / 1GB, 2)) GB" "SUCCESS"
+        Write-Host ""
+        Write-Host "  The VM will automatically:" -ForegroundColor Cyan
+        Write-Host "  - Partition and format the disk" -ForegroundColor Gray
+        Write-Host "  - Install Windows (you'll choose the edition)" -ForegroundColor Gray
+        Write-Host "  - Skip all OOBE screens except user creation" -ForegroundColor Gray
+        Write-Host ""
+
+        return $newISOPath
+
+    } catch {
+        Write-Log "Failed to create automated ISO: $_" "ERROR"
+        Write-Host ""
+        return $null
+    } finally {
+        # Cleanup
+        if ($isoMount) { Dismount-DiskImage -ImagePath $SourceISO -EA SilentlyContinue | Out-Null }
+        if ($workDir -and (Test-Path $workDir)) {
+            Show-Spinner "Cleaning up temporary files..." 2
+            Remove-Item $workDir -Recurse -Force -EA SilentlyContinue
+        }
+    }
+}
 #endregion
 
 
@@ -421,6 +679,25 @@ function New-GpuVM {
     param($Config)
     if (!$Config) { Write-Log "Cancelled" "WARN"; return $null }
 
+    # Check if user wants automated installation
+    $isoToUse = $null
+    if ($Config.ISO -and (Test-Path $Config.ISO)) {
+        Write-Host ""
+        if (Confirm "Enable automated Windows installation? (Skips most setup screens)") {
+            $isoToUse = New-AutoInstallISO -SourceISO $Config.ISO -VMName $Config.Name
+            if ($isoToUse) {
+                Write-Log "Will use automated installation ISO" "SUCCESS"
+                Write-Host ""
+            } else {
+                Write-Log "Falling back to original ISO" "WARN"
+                $isoToUse = $Config.ISO
+                Write-Host ""
+            }
+        } else {
+            $isoToUse = $Config.ISO
+        }
+    }
+
     Write-Box "CREATING VM"
     Write-Log "VM: $($Config.Name) | CPU: $($Config.CPU) | RAM: $($Config.RAM)GB | Storage: $($Config.Storage)GB" "INFO"
     Write-Host ""
@@ -447,8 +724,8 @@ function New-GpuVM {
         Set-VMKeyProtector $Config.Name -NewLocalKeyProtector
         Enable-VMTPM $Config.Name
 
-        if ($Config.ISO -and (Test-Path $Config.ISO)) {
-            Add-VMDvdDrive $Config.Name -Path $Config.ISO
+        if ($isoToUse -and (Test-Path $isoToUse)) {
+            Add-VMDvdDrive $Config.Name -Path $isoToUse
             $dvd = Get-VMDvdDrive $Config.Name; $hdd = Get-VMHardDiskDrive $Config.Name
             if ($dvd -and $hdd) { Set-VMFirmware $Config.Name -BootOrder $dvd, $hdd }
             Write-Log "ISO attached" "SUCCESS"
