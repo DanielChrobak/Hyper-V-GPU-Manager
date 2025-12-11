@@ -398,7 +398,7 @@ ISO preserved: C:\ProgramData\HyperV-ISOs\Dev-VM-AutoInstall.iso
 4. Menu → Install Drivers
    - Select second VM
 
-5. Both VMs can now use the GPU (not simultaneously if total > 100%)
+5. Both VMs can now use the GPU
 
 ```
 
