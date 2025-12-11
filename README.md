@@ -45,6 +45,16 @@ Creates Generation 2 VMs with presets or custom specifications.
 - Optional ISO attachment for OS installation
 - VHDXs stored in: `C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\`
 
+**Automated Installation:**
+When providing an ISO path, you can enable automated Windows installation:
+- Copies ISO to `C:\ProgramData\HyperV-ISOs\` and injects autounattend.xml
+- Automatically partitions and formats the disk
+- Skips most Windows setup screens (EULA, keyboard, privacy settings)
+- **User still selects Windows edition** during installation
+- **User creates account** after first boot
+- Requires Windows ADK installed for ISO creation (oscdimg.exe)
+- If ADK not found, autounattend.xml is saved to Desktop for manual use
+
 **Note:** VM name can be customized when selecting a preset.
 
 ### 2. GPU Partition
@@ -152,11 +162,17 @@ Displays all physical GPUs with partitioning capability status.
 
 ### New Gaming VM from Scratch
 1. **Create VM** → Select Gaming preset → Enter VM name → Provide Windows ISO path
-2. Start VM in Hyper-V Manager and install Windows
-3. Shut down VM after Windows installation completes
-4. **GPU Partition** → Select VM → Choose GPU → Allocate percentage (e.g., 50%)
-5. **Install Drivers** → Select VM → Choose same GPU
-6. Start VM - GPU should now be detected in Device Manager
+2. **Choose automated installation (optional):**
+   - If you select "Yes", the script creates a modified ISO with autounattend.xml
+   - Windows will auto-partition the disk and skip most setup screens
+   - You'll still need to choose Windows edition and create a user account
+3. Start VM in Hyper-V Manager
+   - With automated ISO: Installation proceeds automatically, you select edition and create user
+   - With manual ISO: Complete standard Windows installation
+4. Shut down VM after Windows installation completes
+5. **GPU Partition** → Select VM → Choose GPU → Allocate percentage (e.g., 50%)
+6. **Install Drivers** → Select VM → Choose same GPU
+7. Start VM - GPU should now be detected in Device Manager
 
 ### Update GPU Drivers
 1. Update GPU drivers on host system
@@ -178,8 +194,16 @@ Displays all physical GPUs with partitioning capability status.
 
 ### File Paths
 - **VHD Storage:** `C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\`
+- **ISO Storage:** `C:\ProgramData\HyperV-ISOs\` (for automated installation ISOs)
 - **Temporary Mounts:** `C:\ProgramData\HyperV-Mounts\VMMount_<random>`
 - **GPU Registry:** `HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}`
+
+### Automated Installation Requirements
+- **Windows ADK (Assessment and Deployment Kit)** is required for automated ISO creation
+- Download: https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install
+- The tool uses `oscdimg.exe` from ADK to create bootable ISOs
+- If ADK is not installed, autounattend.xml is saved to Desktop for manual use
+- Automated installation works with Windows 10 and Windows 11 ISOs
 
 ### VM Selection Interface
 When selecting VMs, the script displays:
