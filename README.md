@@ -559,11 +559,4 @@ Get-VM | Where-Object { Get-VMGpuPartitionAdapter $_.Name -EA SilentlyContinue }
 
 ---
 
-## Support
-
-For issues, questions, or contributions:
-- Check the Troubleshooting section above
-- Review the FAQ
-- Ensure you're using the latest version of the script
-
 **Note:** This is a community tool. Support is best-effort and not guaranteed.
