@@ -80,7 +80,7 @@ Creates Generation 2 VMs optimized for GPU partitioning.
 When providing an ISO path, you can enable automated Windows installation:
 - **Creates modified ISO** with `autounattend.xml` injected
 - **Automatic disk partitioning** - Creates UEFI partitions (WINRE, EFI, MSR, Windows)
-- **Skips setup screens** - Bypasses EULA, keyboard selection, privacy settings
+- **Skips setup screens** - Bypasses EULA, privacy settings, etc
 - **User interaction required:**
   - Windows edition selection during installation
   - User account creation after first boot
@@ -415,7 +415,7 @@ ISO preserved: C:\ProgramData\HyperV-ISOs\Dev-VM-AutoInstall.iso
 ### Automated Installation
 The script creates a modified Windows installation ISO with `autounattend.xml` that:
 - **Partitioning:** Creates UEFI GPT layout (WINRE, EFI, MSR, Windows partitions)
-- **Automation:** Accepts EULA, skips keyboard/locale screens, disables privacy prompts
+- **Automation:** Accepts EULA, skips locale screens, disables privacy prompts, etc
 - **Locale:** en-US (configurable by editing XML)
 - **User Interaction:** Edition selection and account creation still required
 - **Boot Prompt:** Uses `efisys_noprompt.bin` if available to skip boot menu
