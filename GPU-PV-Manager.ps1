@@ -485,7 +485,7 @@ function NewVM {
         Log "CPU: $($cfg.CPU) | RAM: $($cfg.RAM)GB | Storage: $($cfg.Storage)GB" "SUCCESS"; Write-Host ""
         return $cfg.Name
     } "VM Creation"
-    return if ($r.OK) { $r.R } else { $null }
+    if ($r.OK) { return $r.R } else { return $null }
 }
 
 function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null) {
