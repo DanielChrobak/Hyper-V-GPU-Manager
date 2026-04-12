@@ -38,7 +38,7 @@ function AppHeader {
     $line = "=" * ($w - 4)
     Write-Host ""
     Write-Host ("  +{0}+" -f $line) -ForegroundColor $script:UI.Accent
-    Write-Host ("  | {0} |" -f (CenterText "HYPER-V GPU VIRTUALIZATION MANAGER" ($w - 6))) -ForegroundColor $script:UI.Title
+    Write-Host ("  | {0} |" -f (CenterText "HYPER-V GPU PARAVIRTUALIZATION MANAGER" ($w - 6))) -ForegroundColor $script:UI.Title
     Write-Host ("  | {0} |" -f (CenterText "GPU-PV orchestration for Windows 10/11 Hyper-V" ($w - 6))) -ForegroundColor $script:UI.Muted
     Write-Host ("  +{0}+" -f $line) -ForegroundColor $script:UI.Accent
     Write-Host ""

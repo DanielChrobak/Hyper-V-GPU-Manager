@@ -1,4 +1,4 @@
-# GPU Virtualization Manager
+# Hyper-V GPU Paravirtualization Manager
 
 A comprehensive PowerShell tool for GPU partitioning (GPU-PV) in Hyper-V virtual machines. Simplifies the process of sharing your GPU with VMs for gaming, development, machine learning, and other GPU-accelerated workloads.
 
@@ -565,7 +565,7 @@ Get-VM | Where-Object { Get-VMGpuPartitionAdapter $_.Name -EA SilentlyContinue }
 
 ## Credits & License
 
-**Hyper-V GPU Virtualization Manager** is provided as-is under the MIT License.
+**Hyper-V GPU Paravirtualization Manager** is provided as-is under the MIT License.
 
 **Free for personal, educational, and commercial use. No warranty provided.**
 
