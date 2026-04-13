@@ -60,6 +60,8 @@ function ResolveGuestSystemDestinationPath($DestinationPath) {
 
     if ($relDest -match '^[A-Za-z]:') { $relDest = $relDest.Substring(2) }
     $relDest = $relDest.Trim()
+    $relDest = $relDest -replace '/', '\'
+    $relDest = $relDest -replace '\\+', '\'
     if (!$relDest.StartsWith('\')) { $relDest = '\' + $relDest.TrimStart('\') }
 
     $normalized = $relDest.ToLowerInvariant()
