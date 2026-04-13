@@ -85,10 +85,6 @@ function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null) {
         if (!$g) { return $false }
         $GPUPath = $g.P
         $GPUName = $g.N
-        if ($g.C -and $g.C -ne "Display") {
-            Log "Selected device class '$($g.C)'. This may be an NPU or non-display accelerator." "WARN"
-            Log "Driver injection in this tool is optimized for Display-class GPUs." "WARN"
-        }
     }
     if ($Pct -eq 0) { Write-Host ""; $Pct = [int](Input "GPU % to allocate (1-100)" { [int]::TryParse($_, [ref]$null) -and [int]$_ -ge 1 -and [int]$_ -le 100 }) }
     $Pct = [Math]::Max(1, [Math]::Min(100, $Pct))
@@ -174,7 +170,8 @@ function RemoveGPU($VMName=$null) {
 
     $gpuList = @()
     foreach ($a in $selectedAdapters) {
-        $gpu = FindGPU $a.InstancePath
+        $meta = ResolvePartitionableDevice $a.InstancePath
+        $gpu = if ($meta -and $meta.Class) { FindGPU $a.InstancePath $meta.Class } else { FindGPU $a.InstancePath }
         if ($gpu -and !($gpuList | Where-Object { $_.DeviceID -eq $gpu.DeviceID })) { $gpuList += $gpu }
     }
 
@@ -330,7 +327,7 @@ function RemoveGPU($VMName=$null) {
             } else {
                 Log "No matching injected driver files found for the selected GPU partition(s)" "INFO"
             }
-        } else { Log "Could not identify display GPU drivers - skipped system file cleanup" "WARN" }
+        } else { Log "Could not identify selected partition device drivers - skipped system file cleanup" "WARN" }
 
         Write-Host ""; Box "GPU REMOVAL COMPLETE" "-"
         Log "Selected GPU partition(s) removed" "SUCCESS"
@@ -389,12 +386,13 @@ function InstallDrivers($VMName=$null) {
 
     $gpuList = @()
     foreach ($a in $selectedAdapters) {
-        $gpu = FindGPU $a.InstancePath
+        $meta = ResolvePartitionableDevice $a.InstancePath
+        $gpu = if ($meta -and $meta.Class) { FindGPU $a.InstancePath $meta.Class } else { FindGPU $a.InstancePath }
         if ($gpu -and !($gpuList | Where-Object { $_.DeviceID -eq $gpu.DeviceID })) { $gpuList += $gpu }
     }
     if (!$gpuList) {
-        Log "Could not find matching display GPU driver(s) for the selected partition(s)" "ERROR"
-        Write-Host "  Note: This can happen when selecting non-display accelerators (for example NPU) for driver injection." -ForegroundColor Yellow
+        Log "Could not find matching device driver(s) for the selected partition(s)" "ERROR"
+        Write-Host "  Note: Ensure the selected partitionable device has an installed host driver package." -ForegroundColor Yellow
         Write-Host ""; Pause; return $false
     }
 
@@ -431,7 +429,7 @@ function InstallDrivers($VMName=$null) {
         }
 
         $drv = @{Folders=@($folderMap.Values); Files=@($fileMap.Values)}
-        if ((!$drv.Folders) -and (!$drv.Files)) { Log "No driver files were resolved for the assigned display GPU(s)" "ERROR"; Write-Host ""; Pause; return $false }
+        if ((!$drv.Folders) -and (!$drv.Files)) { Log "No driver files were resolved for the selected partition device(s)" "ERROR"; Write-Host ""; Pause; return $false }
 
         $mount = MountVHD $vhd
         Spin "Preparing destination..." 1

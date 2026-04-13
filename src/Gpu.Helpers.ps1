@@ -31,8 +31,11 @@ function GetPartitionablePath($GpuObject) {
 }
 
 function GetPciIdsFromPath($Path) {
-    if ($Path -and $Path -match "VEN_([0-9A-Fa-f]{4}).*DEV_([0-9A-Fa-f]{4})") {
-        return [PSCustomObject]@{VEN=$matches[1].ToUpperInvariant(); DEV=$matches[2].ToUpperInvariant()}
+    if ($Path) {
+        $idMatch = [regex]::Match($Path, 'VEN_([0-9A-Fa-f]{4}).*DEV_([0-9A-Fa-f]{4})')
+        if ($idMatch.Success) {
+            return [PSCustomObject]@{VEN=$idMatch.Groups[1].Value.ToUpperInvariant(); DEV=$idMatch.Groups[2].Value.ToUpperInvariant()}
+        }
     }
     return $null
 }
@@ -136,62 +139,61 @@ function GpuSummary($VMName=$null, $Adapters=$null) {
     return (($entries | ForEach-Object { $_.Label }) -join ", ")
 }
 
-function FindGPU($Path) {
+function FindGPU($Path, $PreferredClass=$null) {
     $ids = GetPciIdsFromPath $Path
-    if ($ids) {
+    if (!$ids) { return $null }
+
+    $driverCandidates = @(
         Get-WmiObject Win32_PnPSignedDriver -EA SilentlyContinue |
-            Where-Object { $_.DeviceClass -eq "Display" -and $_.DeviceID -like "*VEN_$($ids.VEN)*DEV_$($ids.DEV)*" } |
+            Where-Object { $_.DeviceID -like "*VEN_$($ids.VEN)*DEV_$($ids.DEV)*" }
+    )
+    if (!$driverCandidates) { return $null }
+
+    if ($PreferredClass) {
+        $preferred = $driverCandidates |
+            Where-Object { $_.DeviceClass -and $_.DeviceClass.Equals("$PreferredClass", [System.StringComparison]::OrdinalIgnoreCase) } |
             Select-Object -First 1
+        if ($preferred) { return $preferred }
     }
+
+    $display = $driverCandidates |
+        Where-Object { $_.DeviceClass -and $_.DeviceClass.Equals("Display", [System.StringComparison]::OrdinalIgnoreCase) } |
+        Select-Object -First 1
+    if ($display) { return $display }
+
+    return ($driverCandidates | Select-Object -First 1)
 }
 
 function SelectGPU($Title="SELECT GPU", [switch]$Partition) {
     if ($Partition) {
         $gpus = GetPartitionableGPUs
-        if (!$gpus) { Box $Title; Log "No partitionable GPUs found" "ERROR"; Write-Host ""; return $null }
-        $list = @(); $i = 0; $skippedNonDisplay = 0
+        if (!$gpus) { Box $Title; Log "No partitionable devices found" "ERROR"; Write-Host ""; return $null }
+        $list = @(); $i = 0
         foreach ($g in $gpus) {
             $p = GetPartitionablePath $g
             $meta = ResolvePartitionableDevice $p
-
-            $displayDriver = FindGPU $p
-            $isDisplay = $false
-            if ($meta -and $meta.Class) {
-                $isDisplay = $meta.Class.Equals("Display", [System.StringComparison]::OrdinalIgnoreCase)
-            } elseif ($displayDriver) {
-                $isDisplay = $true
-            }
-            if (!$isDisplay) { $skippedNonDisplay++; continue }
+            $driver = if ($meta -and $meta.Class) { FindGPU $p $meta.Class } else { FindGPU $p }
 
             if ($meta -and $meta.Name) { $n = $meta.Name }
-            elseif ($displayDriver -and $displayDriver.DeviceName) { $n = $displayDriver.DeviceName }
-            elseif ($meta -and $meta.VEN -and $meta.DEV) { $n = "Unknown Display Device (VEN_$($meta.VEN) DEV_$($meta.DEV))" }
-            else { $n = "Unknown Display Adapter #$($i + 1)" }
+            elseif ($driver -and $driver.DeviceName) { $n = $driver.DeviceName }
+            elseif ($meta -and $meta.VEN -and $meta.DEV) { $n = "Unknown Device (VEN_$($meta.VEN) DEV_$($meta.DEV))" }
+            else { $n = "Unknown Partitionable Adapter #$($i + 1)" }
 
             $label = $n
+            $className = if ($meta -and $meta.Class) { $meta.Class } elseif ($driver -and $driver.DeviceClass) { $driver.DeviceClass } else { $null }
+            if ($className -and $className -ne "Display") { $label = "$label [$className]" }
 
             $list += [PSCustomObject]@{
                 I = $i
                 P = $p
                 N = $n
                 L = $label
-                C = "Display"
-                V = if ($meta -and $meta.Vendor) { $meta.Vendor } elseif ($displayDriver) { $displayDriver.DriverProviderName } else { $null }
+                C = if ($meta -and $meta.Class) { $meta.Class } elseif ($driver -and $driver.DeviceClass) { $driver.DeviceClass } else { "Unknown" }
+                V = if ($meta -and $meta.Vendor) { $meta.Vendor } elseif ($driver) { $driver.DriverProviderName } else { $null }
                 VEN = if ($meta) { $meta.VEN } else { $null }
                 DEV = if ($meta) { $meta.DEV } else { $null }
             }
             $i++
-        }
-
-        if (!$list) {
-            Box $Title
-            if ($skippedNonDisplay -gt 0) {
-                Log "No partitionable display GPUs found (non-display accelerators are hidden in this menu)" "ERROR"
-            } else {
-                Log "No partitionable GPUs found" "ERROR"
-            }
-            Write-Host ""
-            return $null
         }
 
         $items = @($list | ForEach-Object { $_.L }) + "< Cancel >"
@@ -305,8 +307,9 @@ function GetDrivers($GPU) {
     }
 
     foreach ($a in $assoc) {
-        if ($a.Dependent -match 'Name="(.+)"') {
-            $path = $matches[1] -replace "\\\\", "\\"
+        $depMatch = [regex]::Match("$($a.Dependent)", 'Name="(.+)"')
+        if ($depMatch.Success) {
+            $path = $depMatch.Groups[1].Value -replace "\\\\", "\\"
             & $addResolved $path
         }
     }
