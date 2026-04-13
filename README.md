@@ -1,15 +1,15 @@
 # Hyper-V GPU Paravirtualization Manager
 
-A comprehensive PowerShell tool for GPU partitioning (GPU-PV) in Hyper-V virtual machines. Simplifies the process of sharing your GPU with VMs for gaming, development, machine learning, and other GPU-accelerated workloads.
+A comprehensive PowerShell tool for GPU partitioning (GPU-PV) in Hyper-V virtual machines. Simplifies the process of sharing partitionable host devices (display GPUs and other accelerators) with VMs for gaming, development, machine learning, and related workloads.
 
 ## Features
 
 - **Automated VM Creation** with presets for common use cases
-- **GPU Partitioning** - Allocate GPU resources (1-100%) per adapter, including multiple partitionable GPUs on the same VM
-- **Driver Injection** - Automatically inject host GPU drivers into VM disks using package-aware discovery with INF fallback
-- **Automated Windows Installation** - Create unattended installation ISOs
+- **GPU Partitioning** - Allocate resources (1-100%) per partition adapter, including multiple partitionable devices on the same VM
+- **Driver Injection** - Automatically inject host partition-device drivers into VM disks using package-aware discovery with INF fallback
+- **Unattended Install Media** - Create setup media with injected `autounattend.xml`
 - **VM Management** - View, configure, and delete VMs with GPU assignments
-- **Error Handling** - Comprehensive error messages with pauses for readability
+- **Error Handling** - Clear blocking errors with pauses, plus non-blocking warnings for partial driver resolution/copy scenarios
 - **PowerShell 5.1 Compatible** - Works on Windows 10/11 without PowerShell 7
 
 ---
@@ -20,14 +20,15 @@ A comprehensive PowerShell tool for GPU partitioning (GPU-PV) in Hyper-V virtual
 - **Windows 10/11 Pro, Enterprise, or Education**
 - **Hyper-V** enabled (will not work on Home editions)
 - **Administrator privileges** (script auto-elevates)
-- **Partitionable GPU** with drivers installed on host
-  - Most modern NVIDIA, AMD, and Intel GPUs support GPU-PV
-  - Check GPU compatibility with Menu Option 6: "GPU Info"
+- **Partitionable host device** with drivers installed on host
+   - Commonly includes modern NVIDIA/AMD/Intel display GPUs
+   - Can also include non-display accelerators that Hyper-V reports as partitionable (for example NPU/ComputeAccelerator)
+   - Check display-adapter compatibility with Menu Option 7: "GPU Info"
 
 ### Optional Requirements
-- **Windows ADK** (Assessment and Deployment Kit) for automated installation ISO creation
+- **Windows ADK** (Assessment and Deployment Kit) for unattended installation ISO creation
   - Download: https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install
-  - Only required if you want to use the automated installation feature
+   - Only required if you want to build unattended install ISO media from the script
   - If not installed, autounattend.xml will be saved to Desktop for manual use
 
 ---
@@ -87,12 +88,12 @@ Creates Generation 2 VMs optimized for GPU partitioning.
 - Custom automatic start/stop actions configured
 - Boot order: DVD → Hard Disk (for installation)
 
-**Automated Installation (Optional):**
-When providing an ISO path, you can enable automated Windows installation:
+**Unattended Installation Media (Optional):**
+When providing an ISO path, you can build unattended Windows setup media:
 - **Creates modified ISO** with `autounattend.xml` injected
 - **Automatic disk partitioning** - Creates UEFI partitions (WINRE, EFI, MSR, Windows)
 - **Skips setup screens** - Bypasses EULA, privacy settings, etc
-- **User interaction required:**
+- **Still requires user interaction:**
   - Windows edition selection during installation
   - User account creation after first boot
 - **Requires Windows ADK** for ISO creation (oscdimg.exe)
@@ -109,7 +110,7 @@ Allocates GPU resources to a virtual machine.
 
 **Process:**
 1. Select target VM from list (shows current state and specs)
-2. Choose partitionable GPU from host
+2. Choose partitionable device from host
 3. Specify GPU allocation percentage (1-100%)
 4. VM automatically stops if running (graceful shutdown with 60s timeout)
 5. Configures GPU partition adapter with resource limits:
@@ -124,13 +125,14 @@ Allocates GPU resources to a virtual machine.
 
 **Requirements:**
 - VM must be stopped (script handles this automatically)
-- GPU must support partitioning (check with GPU Info menu)
+- Selected device must support partitioning
 
 **Notes:**
 - Allocation percentage applies to all resource types equally
 - Removing GPU partition also cleans up MMIO settings
 - Running GPU Partition again for the same GPU updates that adapter's percentage
 - Running GPU Partition for a different GPU adds another adapter with its own percentage (when `-InstancePath` is supported on the host)
+- Non-display partitionable devices are shown with a class tag in the selection menu (for example `[COMPUTEACCELERATOR]`)
 
 ---
 
@@ -157,7 +159,7 @@ Removes selected GPU partition(s) from a VM, with optional driver file cleanup.
   - GPU adapter and MMIO settings still removed
   - Displays "GPU REMOVAL PARTIAL" message
   - Informs user driver cleanup was skipped
-- **All errors pause** for user to read before returning to menu
+- **Blocking errors pause** for user to read before returning to menu
 
 ---
 
@@ -176,31 +178,44 @@ Injects host GPU drivers into VM disk automatically.
    - **All assigned GPU partitions**
    - **Cancel**
 - You can choose whether to skip unchanged files already present in the VM disk (uses SHA256 hash comparison)
+- For non-display devices, success depends on whether the host has an installed vendor package with resolvable signed-driver associations/INF references
 
 **Detection Process:**
-1. Identifies GPU from partition adapter (matches VEN/DEV IDs)
-2. Resolves driver package files using WMI association class `Win32_PnPSignedDriverCIMDataFile`
-3. Resolves and analyzes GPU INF as fallback/enrichment (`C:\Windows\INF\<oem#.inf>`)
-4. Classifies files into:
+1. Resolves selected partition device metadata from adapter instance path (class + VEN/DEV IDs)
+2. Finds host signed driver with class-aware preference (preferred class -> Display -> first matching VEN/DEV driver)
+3. Resolves package files using WMI association class `Win32_PnPSignedDriverCIMDataFile`
+4. Includes driver service binary path via `Win32_SystemDriver` when available
+5. Resolves and analyzes INF as fallback/enrichment (`C:\Windows\INF\<oem#.inf>`)
+6. Classifies files into:
    - DriverStore folders (`C:\Windows\System32\DriverStore\FileRepository\...`)
    - Direct system file destinations (`System32`, `SysWow64`, `INF`, etc.)
-5. Reports unresolved INF references as warnings
+7. Reports unresolved INF references as warnings and tracks resolver strategy (`WmiAssociation`, `InfFallback`, or `WmiAssociation+InfFallback`)
 
 **Copy Process:**
 1. Mounts VM disk to `C:\ProgramData\HyperV-Mounts\VMMount_<guid>`
 2. Creates `Windows\System32\HostDriverStore\FileRepository` in VM
 3. **Copies driver folders** for selected GPU(s)
-4. **Copies system files** to matching paths (System32/SysWow64)
+4. **Copies system files** to matching paths (System32/SysWow64/INF/etc.)
+   - Any DriverStore-style destination is remapped to `HostDriverStore\FileRepository` for safe offline injection
 5. If skip-existing is enabled, only hash-identical files are skipped; changed files are updated
 6. Reports copied/skipped counts
 7. Writes a driver manifest in the VM (`Windows\System32\HostDriverStore\gpu-driver-manifest.json`) for safer targeted cleanup
 8. Unmounts disk and cleans up
 
+**Driver Manifest Content:**
+- One entry per selected partition device/driver package, including VM name, captured UTC timestamp, resolver strategy, device ID/name, INF path, unresolved references, and tracked destination folders/files
+- Used by **Unassign GPU** cleanup as first choice (exact tracked paths), with resolver fallback when no manifest entry is available
+
 **Error Messages:**
 - **No GPU partition assigned:** Directs user to assign GPU first
-- **GPU driver not found on host:** Ensure GPU drivers installed on host
+- **No matching device driver(s):** Ensure the selected partition device has an installed host driver package
 - **No VHD found:** VM may not have disk attached
 - **Windows not installed:** Clear error with pause before returning to menu
+
+**Troubleshooting Non-Display Partition Devices:**
+- If selection succeeds but no files are resolved, verify the host has a complete vendor driver package installed for that device class
+- Re-run driver injection and review warnings for package association and unresolved INF references
+- Confirm the selected adapter's device class/IDs match an installed signed driver package on the host
 
 **Success Output:**
 ```
@@ -211,81 +226,7 @@ Skipped 420 existing file(s)
 
 ---
 
-### 5. List VMs
-Displays comprehensive overview of all Hyper-V VMs.
-
-**Information Shown:**
-
-| Column | Description | Example |
-|--------|-------------|---------|
-| Icon | State indicator | `[*]` Running, `[ ]` Off, `[~]` Other |
-| VM Name | Virtual machine name | Dev-VM, Gaming-VM |
-| State | Current state | Running, Off, Saved, Paused |
-| CPU | Processor count | 4, 8, 12 |
-| RAM(GB) | Memory allocation | 8, 16, 32 |
-| Storage | VHDX size in GB | 128, 256, 512 |
-| GPU | GPU model and allocation | RTX 4090 (50%), None |
-
-**Color Coding:**
-- **Green:** Running VMs
-- **Gray:** Stopped VMs
-- **Yellow:** Other states (Saved, Paused, etc.)
-
-**GPU Detection:**
-- Shows friendly GPU name (e.g., "NVIDIA GeForce RTX 4090")
-- Displays allocation percentage
-- Shows "None" if no GPU assigned
-
-**Example Output:**
-```
-+----------------------------------------------------------------------------------------+
-| | VM Name            | State   | CPU | RAM(GB) | Storage | GPU                      |
-+----------------------------------------------------------------------------------------+
-| [*] Gaming-VM        | Running | 8   | 16      | 256     | RTX 4090 (75%)           |
-| [ ] Dev-VM           | Off     | 4   | 8       | 128     | RTX 4090 (25%)           |
-| [ ] Test-VM          | Off     | 4   | 8       | 64      | None                     |
-+----------------------------------------------------------------------------------------+
-```
-
----
-
-### 6. GPU Info
-Displays all physical GPUs with detailed information and partitioning capability.
-
-**Information Shown:**
-
-| Column | Description |
-|--------|-------------|
-| # | GPU index number |
-| Status | `[OK]` Working, `[X]` Error/Issue |
-| GPU Name | Full device name (e.g., "NVIDIA GeForce RTX 4090") |
-| Driver Version | Current driver version |
-| Provider | Driver provider (NVIDIA, AMD, Intel) |
-| Partitionable | `Yes` (Cyan) or `No` (Gray) |
-
-**Detection:**
-- Queries WMI `Win32_VideoController`
-- Excludes Microsoft/Remote Display adapters
-- Matches VEN/DEV IDs against Hyper-V partitionable device output (`Get-VMHostPartitionableGpu` on newer builds, `Get-VMPartitionableGpu` on older builds)
-- Correctly identifies NVIDIA, AMD, and Intel GPUs
-
-**Partitionability Check:**
-- Compares GPU hardware IDs with Hyper-V partitionable GPU list
-- Only GPUs marked "Yes" can be used for GPU partitioning
-
-**Example Output:**
-```
-+-------------------------------------------------------------------------------------------+
-| # | Status | GPU Name                      | Driver Version | Provider | Partitionable |
-+-------------------------------------------------------------------------------------------+
-| 1 | [OK]   | NVIDIA GeForce RTX 4090       | 31.0.15.5123   | NVIDIA   | Yes           |
-| 2 | [OK]   | Intel UHD Graphics 770        | 31.0.101.4146  | Intel    | No            |
-+-------------------------------------------------------------------------------------------+
-```
-
----
-
-### 7. Delete VM
+### 5. Delete VM
 Completely removes a virtual machine with optional file cleanup.
 
 **Process:**
@@ -328,6 +269,81 @@ ISO preserved: C:\ProgramData\HyperV-ISOs\Dev-VM-AutoInstall.iso
 
 ---
 
+### 6. List VMs
+Displays comprehensive overview of all Hyper-V VMs.
+
+**Information Shown:**
+
+| Column | Description | Example |
+|--------|-------------|---------|
+| Icon | State indicator | `[*]` Running, `[ ]` Off, `[~]` Other |
+| VM Name | Virtual machine name | Dev-VM, Gaming-VM |
+| State | Current state | Running, Off, Saved, Paused |
+| CPU | Processor count | 4, 8, 12 |
+| RAM(GB) | Memory allocation | 8, 16, 32 |
+| Storage | VHDX size in GB | 128, 256, 512 |
+| GPU | GPU model and allocation | RTX 4090 (50%), None |
+
+**Color Coding:**
+- **Green:** Running VMs
+- **Gray:** Stopped VMs
+- **Yellow:** Other states (Saved, Paused, etc.)
+
+**GPU Detection:**
+- Shows friendly GPU name (e.g., "NVIDIA GeForce RTX 4090")
+- Displays allocation percentage
+- Shows "None" if no GPU assigned
+
+**Example Output:**
+```
++----------------------------------------------------------------------------------------+
+| | VM Name            | State   | CPU | RAM(GB) | Storage | GPU                      |
++----------------------------------------------------------------------------------------+
+| [*] Gaming-VM        | Running | 8   | 16      | 256     | RTX 4090 (75%)           |
+| [ ] Dev-VM           | Off     | 4   | 8       | 128     | RTX 4090 (25%)           |
+| [ ] Test-VM          | Off     | 4   | 8       | 64      | None                     |
++----------------------------------------------------------------------------------------+
+```
+
+---
+
+### 7. GPU Info
+Displays all physical GPUs with detailed information and partitioning capability.
+
+**Information Shown:**
+
+| Column | Description |
+|--------|-------------|
+| # | GPU index number |
+| Status | `[OK]` Working, `[X]` Error/Issue |
+| GPU Name | Full device name (e.g., "NVIDIA GeForce RTX 4090") |
+| Driver Version | Current driver version |
+| Provider | Driver provider (NVIDIA, AMD, Intel) |
+| Partitionable | `Yes` (Cyan) or `No` (Gray) |
+
+**Detection:**
+- Queries WMI `Win32_VideoController`
+- Excludes Microsoft/Remote Display adapters
+- Matches VEN/DEV IDs against Hyper-V partitionable device output (`Get-VMHostPartitionableGpu` on newer builds, `Get-VMPartitionableGpu` on older builds)
+- Correctly identifies NVIDIA, AMD, and Intel GPUs
+
+**Partitionability Check:**
+- Compares GPU hardware IDs with Hyper-V partitionable GPU list
+- GPUs marked "Yes" can be targeted through display-adapter workflows
+- Non-display partitionable devices (for example NPU/ComputeAccelerator) may not appear in this screen because it is based on `Win32_VideoController`
+
+**Example Output:**
+```
++-------------------------------------------------------------------------------------------+
+| # | Status | GPU Name                      | Driver Version | Provider | Partitionable |
++-------------------------------------------------------------------------------------------+
+| 1 | [OK]   | NVIDIA GeForce RTX 4090       | 31.0.15.5123   | NVIDIA   | Yes           |
+| 2 | [OK]   | Intel UHD Graphics 770        | 31.0.101.4146  | Intel    | No            |
++-------------------------------------------------------------------------------------------+
+```
+
+---
+
 ## Complete Workflow Examples
 
 ### New Gaming VM from Scratch
@@ -336,14 +352,14 @@ ISO preserved: C:\ProgramData\HyperV-ISOs\Dev-VM-AutoInstall.iso
    - Select "Gaming" preset
    - Enter VM name (or press Enter for default "Gaming-VM")
    - Enter Windows ISO path: C:\ISOs\Win11.iso
-   - Choose "Y" for automated installation
+   - Choose "Y" to build unattended install media
 
-2. Wait for ISO creation (automated installation ISO)
+2. Wait for ISO creation (unattended installation ISO)
    - Script creates modified ISO with autounattend.xml
    - VM created and ISO attached
 
 3. Start VM in Hyper-V Manager
-   - Windows installation proceeds automatically
+   - Windows setup runs mostly unattended
    - Select Windows edition when prompted
    - Create user account after first boot
 
@@ -426,11 +442,18 @@ ISO preserved: C:\ProgramData\HyperV-ISOs\Dev-VM-AutoInstall.iso
 
 ### File Paths
 - **VHD Storage:** `C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\`
-- **ISO Storage:** `C:\ProgramData\HyperV-ISOs\` (automated installation ISOs)
-- **Temporary Mounts:** `C:\ProgramData\HyperV-Mounts\VMMount_<random>`
+- **ISO Storage:** `C:\ProgramData\HyperV-ISOs\` (unattended installation ISOs)
+- **Temporary Mounts:** `C:\ProgramData\HyperV-Mounts\VMMount_<guid>` (`<guid>` is a 32-character GUID string without hyphens)
+- **Host Driver Store (inside mounted guest):** `Windows\System32\HostDriverStore\FileRepository\`
+- **Driver Manifest (inside mounted guest):** `Windows\System32\HostDriverStore\gpu-driver-manifest.json`
 - **GPU Registry:** `HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}`
 
-### Automated Installation
+### Driver Store Isolation
+To improve offline driver injection reliability, any destination path that targets guest DriverStore (`\Windows\System32\DriverStore\FileRepository\...`) is remapped to guest HostDriverStore (`\Windows\System32\HostDriverStore\FileRepository\...`) before copy.
+
+This keeps injected host package content isolated from guest-managed DriverStore operations while preserving predictable cleanup via manifest and resolver fallback logic.
+
+### Unattended Installation Media
 The script creates a modified Windows installation ISO with `autounattend.xml` that:
 - **Partitioning:** Creates UEFI GPT layout (WINRE, EFI, MSR, Windows partitions)
 - **Automation:** Accepts EULA, disables privacy prompts, etc
@@ -481,7 +504,8 @@ When selecting VMs, the interface displays:
   - GPU allocation percentage or "None"
 
 ### Error Handling & User Experience
-- **All errors pause** before returning to menu (user must press Enter)
+- **Blocking errors pause** before returning to menu (user must press Enter)
+- **Non-blocking warnings continue** when partial driver discovery/copy results are acceptable
 - **Descriptive error messages** with suggested actions
 - **Graceful handling** of missing Windows installations
 - **Partial success reporting** when some operations succeed
@@ -495,11 +519,14 @@ When selecting VMs, the interface displays:
 - **Execution policy bypass:** Only for script execution, doesn't change system policy
 
 ### GPU Driver Detection
-The script uses multiple methods to identify GPU drivers:
-1. **Registry analysis:** Searches GPU class registry for matching device IDs
-2. **INF parsing:** Extracts file references from driver INF files
-3. **File location:** Searches multiple paths (DriverStore, System32, SysWow64)
-4. **VEN/DEV matching:** Matches partition adapter to host GPU by hardware IDs
+The script uses a multi-tier strategy to identify driver content:
+1. **Partition device correlation:** Uses partition adapter instance path and VEN/DEV IDs to identify candidate signed drivers
+2. **Class-aware lookup:** Prefers signed drivers matching the selected device class, then falls back to Display, then first matching candidate
+3. **WMI package association (primary):** Enumerates package files using `Win32_PnPSignedDriverCIMDataFile`
+4. **Service binary inclusion:** Includes driver service binary path from `Win32_SystemDriver` when available
+5. **INF enrichment/fallback:** Resolves INF path and extracts referenced files (`.sys`, `.dll`, `.exe`, `.cat`, etc.)
+6. **Path classification:** Splits results into DriverStore folders and direct system destinations
+7. **Strategy tracking:** Records resolver mode (`WmiAssociation`, `InfFallback`, `WmiAssociation+InfFallback`) and unresolved INF references in manifest/logs
 
 ### Memory-Mapped I/O (MMIO)
 GPU partitioning requires MMIO space for GPU communication:
@@ -525,7 +552,7 @@ $script:Presets = @(
 )
 ```
 
-### Custom Automated Installation XML
+### Custom Unattended Installation XML
 Modify `$script:AutoXML` in `src\AutoInstallIso.ps1` to customize:
 - Language/locale settings
 - Time zone
