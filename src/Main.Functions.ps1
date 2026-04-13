@@ -54,6 +54,27 @@ function NewVM {
     if ($r.OK) { return $r.R } else { return $null }
 }
 
+function ResolveGuestSystemDestinationPath($DestinationPath) {
+    $relDest = "$DestinationPath"
+    if ([string]::IsNullOrWhiteSpace($relDest)) { return $null }
+
+    if ($relDest -match '^[A-Za-z]:') { $relDest = $relDest.Substring(2) }
+    $relDest = $relDest.Trim()
+    if (!$relDest.StartsWith('\')) { $relDest = '\' + $relDest.TrimStart('\') }
+
+    $normalized = $relDest.ToLowerInvariant()
+    if ($normalized -eq '\windows\system32\cmd.exe') { return $null }
+
+    $driverStorePrefix = '\Windows\System32\DriverStore\FileRepository\'
+    if ($normalized.StartsWith($driverStorePrefix.ToLowerInvariant())) {
+        $tail = $relDest.Substring($driverStorePrefix.Length).TrimStart('\')
+        if ($tail) { return "\Windows\System32\HostDriverStore\FileRepository\$tail" }
+        return '\Windows\System32\HostDriverStore\FileRepository'
+    }
+
+    return $relDest
+}
+
 function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null) {
     if (!$VMName) { $vm = SelectVM "GPU PARTITION VM"; if (!$vm) { return $false }; $VMName = $vm.Name }
     if (!(Get-VM $VMName -EA SilentlyContinue)) { Log "VM not found" "ERROR"; Write-Host ""; Pause; return $false }
@@ -267,8 +288,12 @@ function RemoveGPU($VMName=$null) {
                             }
                         }
                         foreach ($f in $drv.Files) {
-                            $k = "$($f.D)".ToLowerInvariant()
-                            if (!$fileMap.ContainsKey($k)) { $fileMap[$k] = $f }
+                            $mappedDest = ResolveGuestSystemDestinationPath "$($f.D)"
+                            if (!$mappedDest) { continue }
+                            $k = "$mappedDest".ToLowerInvariant()
+                            if (!$fileMap.ContainsKey($k)) {
+                                $fileMap[$k] = [PSCustomObject]@{N=$f.N; S=$f.S; D=$mappedDest}
+                            }
                         }
                     }
                 }
@@ -287,9 +312,8 @@ function RemoveGPU($VMName=$null) {
                 $allFiles = @($fileMap.Values)
                 if ($allFiles) {
                     foreach ($f in $allFiles) {
-                        $relDest = "$($f.D)"
-                        if ($relDest -match '^[A-Za-z]:') { $relDest = $relDest.Substring(2) }
-                        if (!$relDest.StartsWith("\")) { $relDest = "\" + $relDest.TrimStart('\\') }
+                        $relDest = ResolveGuestSystemDestinationPath "$($f.D)"
+                        if (!$relDest) { continue }
                         $fp = "$($mount.Path)$relDest"
                         if (Test-Path $fp) {
                             Remove-Item $fp -Force -EA SilentlyContinue
@@ -391,8 +415,12 @@ function InstallDrivers($VMName=$null) {
                     if (!$folderMap.ContainsKey($k)) { $folderMap[$k] = $folder }
                 }
                 foreach ($f in $drv.Files) {
-                    $k = "$($f.D)".ToLowerInvariant()
-                    if (!$fileMap.ContainsKey($k)) { $fileMap[$k] = $f }
+                    $mappedDest = ResolveGuestSystemDestinationPath "$($f.D)"
+                    if (!$mappedDest) { continue }
+                    $k = "$mappedDest".ToLowerInvariant()
+                    if (!$fileMap.ContainsKey($k)) {
+                        $fileMap[$k] = [PSCustomObject]@{N=$f.N; S=$f.S; D=$mappedDest}
+                    }
                 }
                 if ($drv.Missing -and $drv.Missing.Count -gt 0) {
                     Log "$($gpu.DeviceName): $($drv.Missing.Count) unresolved INF reference(s)" "WARN"
@@ -446,10 +474,12 @@ function InstallDrivers($VMName=$null) {
 
         Write-Host ""; Log "Copying $($drv.Files.Count) system files..." "INFO"
         foreach ($f in $drv.Files) {
-            $relDest = "$($f.D)"
-            if ($relDest -match '^[A-Za-z]:') { $relDest = $relDest.Substring(2) }
-            if (!$relDest.StartsWith("\")) { $relDest = "\" + $relDest.TrimStart('\\') }
-            $dst = "$($mount.Path)$relDest"; EnsureDir (Split-Path -Parent $dst)
+            $relDest = ResolveGuestSystemDestinationPath "$($f.D)"
+            if (!$relDest) { continue }
+            $dst = "$($mount.Path)$relDest"
+            $dstParent = Split-Path -Parent $dst
+            $mk = Try-Op { New-Item -ItemType Directory -Path $dstParent -Force -EA Stop | Out-Null; return $true } "Prepare path $relDest"
+            if (!$mk.OK) { continue }
             if ($skipExisting -and (Test-Path $dst) -and (TestFileContentEqual $f.S $dst)) { $skippedFiles++; continue }
             $ok = (Try-Op { Copy-Item $f.S $dst -Force -EA Stop; return $true } "Copy $($f.N)").OK
             if ($ok) { $copiedFiles++; Log "+ $($f.N)" "SUCCESS" }
@@ -466,7 +496,12 @@ function InstallDrivers($VMName=$null) {
 
             $gpuDrv = $gpuDriverMap[$gpu.DeviceID]
             $folderDest = @($gpuDrv.Folders | ForEach-Object { "\Windows\System32\HostDriverStore\FileRepository\$(Split-Path -Leaf $_)" } | Sort-Object -Unique)
-            $fileDest = @($gpuDrv.Files | ForEach-Object { $_.D } | Sort-Object -Unique)
+            $fileDest = @(
+                $gpuDrv.Files |
+                ForEach-Object { ResolveGuestSystemDestinationPath "$($_.D)" } |
+                Where-Object { $_ } |
+                Sort-Object -Unique
+            )
             if ((!$folderDest) -and (!$fileDest)) { continue }
 
             $newManifest += [PSCustomObject]@{

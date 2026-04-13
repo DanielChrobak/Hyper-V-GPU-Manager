@@ -149,28 +149,49 @@ function SelectGPU($Title="SELECT GPU", [switch]$Partition) {
     if ($Partition) {
         $gpus = GetPartitionableGPUs
         if (!$gpus) { Box $Title; Log "No partitionable GPUs found" "ERROR"; Write-Host ""; return $null }
-        $list = @(); $i = 0
+        $list = @(); $i = 0; $skippedNonDisplay = 0
         foreach ($g in $gpus) {
             $p = GetPartitionablePath $g
             $meta = ResolvePartitionableDevice $p
+
+            $displayDriver = FindGPU $p
+            $isDisplay = $false
+            if ($meta -and $meta.Class) {
+                $isDisplay = $meta.Class.Equals("Display", [System.StringComparison]::OrdinalIgnoreCase)
+            } elseif ($displayDriver) {
+                $isDisplay = $true
+            }
+            if (!$isDisplay) { $skippedNonDisplay++; continue }
+
             if ($meta -and $meta.Name) { $n = $meta.Name }
-            elseif ($meta -and $meta.VEN -and $meta.DEV) { $n = "Unknown Device (VEN_$($meta.VEN) DEV_$($meta.DEV))" }
-            else { $n = "Unknown Partitionable Adapter #$($i + 1)" }
+            elseif ($displayDriver -and $displayDriver.DeviceName) { $n = $displayDriver.DeviceName }
+            elseif ($meta -and $meta.VEN -and $meta.DEV) { $n = "Unknown Display Device (VEN_$($meta.VEN) DEV_$($meta.DEV))" }
+            else { $n = "Unknown Display Adapter #$($i + 1)" }
 
             $label = $n
-            if ($meta -and $meta.Class -and $meta.Class -ne "Display") { $label = "$label [$($meta.Class)]" }
 
             $list += [PSCustomObject]@{
                 I = $i
                 P = $p
                 N = $n
                 L = $label
-                C = if ($meta) { $meta.Class } else { $null }
-                V = if ($meta) { $meta.Vendor } else { $null }
+                C = "Display"
+                V = if ($meta -and $meta.Vendor) { $meta.Vendor } elseif ($displayDriver) { $displayDriver.DriverProviderName } else { $null }
                 VEN = if ($meta) { $meta.VEN } else { $null }
                 DEV = if ($meta) { $meta.DEV } else { $null }
             }
             $i++
+        }
+
+        if (!$list) {
+            Box $Title
+            if ($skippedNonDisplay -gt 0) {
+                Log "No partitionable display GPUs found (non-display accelerators are hidden in this menu)" "ERROR"
+            } else {
+                Log "No partitionable GPUs found" "ERROR"
+            }
+            Write-Host ""
+            return $null
         }
 
         $items = @($list | ForEach-Object { $_.L }) + "< Cancel >"
@@ -179,10 +200,7 @@ function SelectGPU($Title="SELECT GPU", [switch]$Partition) {
 
         $pick = $list[$sel]
         Log "Selected: $($pick.N)" "SUCCESS"
-        if ($pick.C -and $pick.C -ne "Display") {
-            Write-Host "  Device class: $($pick.C)" -ForegroundColor DarkYellow
-            Write-Host "  Possible non-display accelerator (for example NPU)." -ForegroundColor DarkYellow
-        } elseif ((!$pick.N -or $pick.N -like "Unknown*") -and $pick.VEN -and $pick.DEV) {
+        if ((!$pick.N -or $pick.N -like "Unknown*") -and $pick.VEN -and $pick.DEV) {
             Write-Host "  IDs: VEN_$($pick.VEN) DEV_$($pick.DEV)" -ForegroundColor DarkGray
             Write-Host "  Adapter path: $($pick.P)" -ForegroundColor DarkGray
         }
@@ -218,12 +236,12 @@ function NormalizeDriverPath($Path) {
 function GetDriverStoreFolderRoot($Path) {
     $norm = NormalizeDriverPath $Path
     if (!$norm) { return $null }
-    $base = "C:\Windows\System32\DriverStore\FileRepository\"
-    if ($norm -notlike "$base*") { return $null }
-    $tail = $norm.Substring($base.Length)
-    if ([string]::IsNullOrWhiteSpace($tail)) { return $null }
-    $folder = $tail.Split('\\')[0]
+    $clean = $norm -replace '/', '\\'
+    $m = [regex]::Match($clean, '(?i)^[A-Za-z]:\\windows\\system32\\driverstore\\filerepository\\([^\\]+)')
+    if (!$m.Success) { return $null }
+    $folder = $m.Groups[1].Value
     if ([string]::IsNullOrWhiteSpace($folder)) { return $null }
+    $base = Join-Path $env:windir "System32\DriverStore\FileRepository"
     return (Join-Path $base $folder).TrimEnd('\\')
 }
 
@@ -267,7 +285,9 @@ function GetDrivers($GPU) {
 
     $resolvedMap = @{}
     $missingRefs = @()
+    $refNameSet = @{}
     $strategy = "WmiAssociation"
+    $serviceBinaryPath = $null
 
     $addResolved = {
         param($Candidate)
@@ -305,7 +325,10 @@ function GetDrivers($GPU) {
             } else {
                 $bin.Split(' ')[0]
             }
-            if ($binPath) { & $addResolved $binPath }
+            if ($binPath) {
+                $serviceBinaryPath = NormalizeDriverPath $binPath
+                & $addResolved $binPath
+            }
         }
     }
 
@@ -314,6 +337,9 @@ function GetDrivers($GPU) {
     if ($infPath) {
         & $addResolved $infPath
         $refs = @(GetInfReferences $infPath)
+        foreach ($r in $refs) {
+            $refNameSet["$r".ToLowerInvariant()] = $true
+        }
         Log "Found $($refs.Count) INF file reference(s)" "INFO"
         $search = @(
             @{P="C:\Windows\System32\DriverStore\FileRepository"; R=$true},
@@ -354,6 +380,14 @@ function GetDrivers($GPU) {
         }
 
         if ($path -match '^[A-Za-z]:\\') {
+            $leaf = (Split-Path -Leaf $path).ToLowerInvariant()
+            $isReferenced = ($refNameSet.Count -eq 0) -or $refNameSet.ContainsKey($leaf)
+            $isServiceBinary = $false
+            if ($serviceBinaryPath) {
+                $isServiceBinary = $path.Equals($serviceBinaryPath, [System.StringComparison]::OrdinalIgnoreCase)
+            }
+            if (!$isReferenced -and !$isServiceBinary) { continue }
+
             $dest = $path -replace '^[A-Za-z]:', ''
             $key = $dest.ToLowerInvariant()
             if (!$fileMap.ContainsKey($key)) {
