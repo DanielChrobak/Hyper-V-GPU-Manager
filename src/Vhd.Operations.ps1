@@ -12,7 +12,7 @@ function SecureDir($P) {
 
 function MountVHD($VHD) {
     SecureDir $script:Paths.Mount
-    $mp = Join-Path $script:Paths.Mount "VMMount_$(Get-Random)"
+    $mp = Join-Path $script:Paths.Mount ("VMMount_" + [Guid]::NewGuid().ToString("N"))
     $disk = $null; $part = $null
     try {
         SecureDir $mp; Spin "Mounting virtual disk..." 2

@@ -6,7 +6,7 @@ A comprehensive PowerShell tool for GPU partitioning (GPU-PV) in Hyper-V virtual
 
 - **Automated VM Creation** with presets for common use cases
 - **GPU Partitioning** - Allocate GPU resources (1-100%) per adapter, including multiple partitionable GPUs on the same VM
-- **Driver Injection** - Automatically inject host GPU drivers into VM disks
+- **Driver Injection** - Automatically inject host GPU drivers into VM disks using package-aware discovery with INF fallback
 - **Automated Windows Installation** - Create unattended installation ISOs
 - **VM Management** - View, configure, and delete VMs with GPU assignments
 - **Error Handling** - Comprehensive error messages with pauses for readability
@@ -148,7 +148,8 @@ Removes selected GPU partition(s) from a VM, with optional driver file cleanup.
    - Low MMIO: 0
    - High MMIO: 0
    - Guest-controlled cache: Disabled
-8. If cleanup is chosen, mounts VM disk to `C:\ProgramData\HyperV-Mounts\VMMount_<random>` and removes matching driver files/folders for the selected GPU partition(s)
+8. If cleanup is chosen, mounts VM disk to `C:\ProgramData\HyperV-Mounts\VMMount_<guid>` and removes matching driver files/folders for the selected GPU partition(s)
+   - Cleanup prefers manifest-based removal (exact tracked paths) and falls back to resolver-based matching when no manifest exists
 9. Unmounts disk and cleans up mount point
 
 **Error Handling:**
@@ -174,28 +175,26 @@ Injects host GPU drivers into VM disk automatically.
    - A specific assigned GPU partition
    - **All assigned GPU partitions**
    - **Cancel**
-- You can choose whether to skip files already present in the VM disk (recommended for repeat runs)
+- You can choose whether to skip unchanged files already present in the VM disk (uses SHA256 hash comparison)
 
 **Detection Process:**
 1. Identifies GPU from partition adapter (matches VEN/DEV IDs)
-2. Queries WMI for GPU info (Win32_VideoController)
-3. Searches registry: `HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968...}`
-4. Locates GPU's INF file in `C:\Windows\INF\`
-5. Parses INF for driver file references:
-   - `.sys`, `.dll`, `.exe`, `.cat`, `.inf`, `.bin`, `.vp`, `.cpa`
-6. Searches for files in:
-   - `C:\Windows\System32\DriverStore\FileRepository` (recursive)
-   - `C:\Windows\System32` (non-recursive)
-   - `C:\Windows\SysWow64` (non-recursive)
+2. Resolves driver package files using WMI association class `Win32_PnPSignedDriverCIMDataFile`
+3. Resolves and analyzes GPU INF as fallback/enrichment (`C:\Windows\INF\<oem#.inf>`)
+4. Classifies files into:
+   - DriverStore folders (`C:\Windows\System32\DriverStore\FileRepository\...`)
+   - Direct system file destinations (`System32`, `SysWow64`, `INF`, etc.)
+5. Reports unresolved INF references as warnings
 
 **Copy Process:**
-1. Mounts VM disk to `C:\ProgramData\HyperV-Mounts\VMMount_<random>`
+1. Mounts VM disk to `C:\ProgramData\HyperV-Mounts\VMMount_<guid>`
 2. Creates `Windows\System32\HostDriverStore\FileRepository` in VM
 3. **Copies driver folders** for selected GPU(s)
 4. **Copies system files** to matching paths (System32/SysWow64)
-5. If skip-existing is enabled, existing files are skipped and only missing files are copied
+5. If skip-existing is enabled, only hash-identical files are skipped; changed files are updated
 6. Reports copied/skipped counts
-7. Unmounts disk and cleans up
+7. Writes a driver manifest in the VM (`Windows\System32\HostDriverStore\gpu-driver-manifest.json`) for safer targeted cleanup
+8. Unmounts disk and cleans up
 
 **Error Messages:**
 - **No GPU partition assigned:** Directs user to assign GPU first

@@ -206,43 +206,96 @@ function RemoveGPU($VMName=$null) {
 
         if ($gpuList) {
             Write-Host ""; Log "Removing system driver files..." "INFO"
-            $folderMap = @{}
-            $fileMap = @{}
-            foreach ($gpu in $gpuList) {
-                $drv = GetDrivers $gpu
-                if ($drv) {
-                    foreach ($folder in $drv.Folders) {
-                        $leaf = Split-Path -Leaf $folder
-                        if ($leaf) {
-                            $k = "$leaf".ToLowerInvariant()
-                            if (!$folderMap.ContainsKey($k)) { $folderMap[$k] = $leaf }
+            $removedFolders = 0
+            $removedFiles = 0
+            $selectedGpuIds = @($gpuList | ForEach-Object { $_.DeviceID } | Where-Object { $_ } | Select-Object -Unique)
+            $manifestEntries = @(ReadDriverManifest $mount.Path)
+            $usedManifest = $false
+
+            if ($manifestEntries -and $selectedGpuIds) {
+                $targetEntries = @($manifestEntries | Where-Object { $_.GpuDeviceId -and ($selectedGpuIds -contains $_.GpuDeviceId) })
+                if ($targetEntries) {
+                    $usedManifest = $true
+                    $mountRoot = [System.IO.Path]::GetFullPath($mount.Path)
+
+                    foreach ($entry in $targetEntries) {
+                        foreach ($relFolder in @($entry.Folders)) {
+                            $trimRel = "$relFolder".TrimStart('\\', '/')
+                            if ([string]::IsNullOrWhiteSpace($trimRel)) { continue }
+                            $absFolder = [System.IO.Path]::GetFullPath((Join-Path $mount.Path $trimRel))
+                            if (!$absFolder.StartsWith($mountRoot, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                            if (Test-Path $absFolder) {
+                                Remove-Item $absFolder -Recurse -Force -EA SilentlyContinue
+                                if (!(Test-Path $absFolder)) { $removedFolders++; Log "- folder $(Split-Path -Leaf $absFolder)" "SUCCESS" }
+                            }
+                        }
+
+                        foreach ($relFile in @($entry.Files)) {
+                            $trimRel = "$relFile".TrimStart('\\', '/')
+                            if ([string]::IsNullOrWhiteSpace($trimRel)) { continue }
+                            $absFile = [System.IO.Path]::GetFullPath((Join-Path $mount.Path $trimRel))
+                            if (!$absFile.StartsWith($mountRoot, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                            if (Test-Path $absFile) {
+                                Remove-Item $absFile -Force -EA SilentlyContinue
+                                if (!(Test-Path $absFile)) { $removedFiles++; Log "- $(Split-Path -Leaf $absFile)" "SUCCESS" }
+                            }
                         }
                     }
-                    foreach ($f in $drv.Files) {
-                        $k = "$($f.D)".ToLowerInvariant()
-                        if (!$fileMap.ContainsKey($k)) { $fileMap[$k] = $f }
+
+                    $targetEntryIds = @($targetEntries | ForEach-Object { $_.EntryId } | Where-Object { $_ })
+                    $remainingManifest = if ($targetEntryIds) {
+                        @($manifestEntries | Where-Object { $targetEntryIds -notcontains $_.EntryId })
+                    } else {
+                        @($manifestEntries | Where-Object { $_.GpuDeviceId -notin $selectedGpuIds })
                     }
+                    WriteDriverManifest $mount.Path $remainingManifest
+                    Log "Cleaned files using manifest records" "INFO"
                 }
             }
 
-            $removedFolders = 0
-            $repo = "$($mount.Path)\Windows\System32\HostDriverStore\FileRepository"
-            if (Test-Path $repo) {
-                foreach ($leaf in $folderMap.Values) {
-                    $fp = Join-Path $repo $leaf
-                    if (Test-Path $fp) {
-                        Remove-Item $fp -Recurse -Force -EA SilentlyContinue
-                        if (!(Test-Path $fp)) { $removedFolders++; Log "- folder $leaf" "SUCCESS" }
+            if (!$usedManifest) {
+                $folderMap = @{}
+                $fileMap = @{}
+                foreach ($gpu in $gpuList) {
+                    $drv = GetDrivers $gpu
+                    if ($drv) {
+                        foreach ($folder in $drv.Folders) {
+                            $leaf = Split-Path -Leaf $folder
+                            if ($leaf) {
+                                $k = "$leaf".ToLowerInvariant()
+                                if (!$folderMap.ContainsKey($k)) { $folderMap[$k] = $leaf }
+                            }
+                        }
+                        foreach ($f in $drv.Files) {
+                            $k = "$($f.D)".ToLowerInvariant()
+                            if (!$fileMap.ContainsKey($k)) { $fileMap[$k] = $f }
+                        }
                     }
                 }
-            }
 
-            $allFiles = @($fileMap.Values)
-            $removedFiles = 0
-            if ($allFiles) {
-                foreach ($f in $allFiles) {
-                    $fp = "$($mount.Path)$($f.D)"
-                    if (Test-Path $fp) { Remove-Item $fp -Force -EA SilentlyContinue; if (!(Test-Path $fp)) { $removedFiles++; Log "- $($f.N)" "SUCCESS" } }
+                $repo = "$($mount.Path)\Windows\System32\HostDriverStore\FileRepository"
+                if (Test-Path $repo) {
+                    foreach ($leaf in $folderMap.Values) {
+                        $fp = Join-Path $repo $leaf
+                        if (Test-Path $fp) {
+                            Remove-Item $fp -Recurse -Force -EA SilentlyContinue
+                            if (!(Test-Path $fp)) { $removedFolders++; Log "- folder $leaf" "SUCCESS" }
+                        }
+                    }
+                }
+
+                $allFiles = @($fileMap.Values)
+                if ($allFiles) {
+                    foreach ($f in $allFiles) {
+                        $relDest = "$($f.D)"
+                        if ($relDest -match '^[A-Za-z]:') { $relDest = $relDest.Substring(2) }
+                        if (!$relDest.StartsWith("\")) { $relDest = "\" + $relDest.TrimStart('\\') }
+                        $fp = "$($mount.Path)$relDest"
+                        if (Test-Path $fp) {
+                            Remove-Item $fp -Force -EA SilentlyContinue
+                            if (!(Test-Path $fp)) { $removedFiles++; Log "- $($f.N)" "SUCCESS" }
+                        }
+                    }
                 }
             }
 
@@ -319,7 +372,7 @@ function InstallDrivers($VMName=$null) {
         Write-Host ""; Pause; return $false
     }
 
-    $skipExisting = Confirm "Skip files that already exist in the VM disk? (recommended for repeat installs)"
+    $skipExisting = Confirm "Skip unchanged files that already exist in the VM disk? (uses hash comparison)"
 
     $vhd = (Get-VMHardDiskDrive $VMName -EA SilentlyContinue).Path
     if (!$vhd) { Log "No VHD found" "ERROR"; Write-Host ""; Pause; return $false }
@@ -328,9 +381,11 @@ function InstallDrivers($VMName=$null) {
     try {
         $folderMap = @{}
         $fileMap = @{}
+        $gpuDriverMap = @{}
         foreach ($gpu in $gpuList) {
             $drv = GetDrivers $gpu
             if ($drv) {
+                if ($gpu.DeviceID) { $gpuDriverMap[$gpu.DeviceID] = $drv }
                 foreach ($folder in $drv.Folders) {
                     $k = "$folder".ToLowerInvariant()
                     if (!$folderMap.ContainsKey($k)) { $folderMap[$k] = $folder }
@@ -338,6 +393,9 @@ function InstallDrivers($VMName=$null) {
                 foreach ($f in $drv.Files) {
                     $k = "$($f.D)".ToLowerInvariant()
                     if (!$fileMap.ContainsKey($k)) { $fileMap[$k] = $f }
+                }
+                if ($drv.Missing -and $drv.Missing.Count -gt 0) {
+                    Log "$($gpu.DeviceName): $($drv.Missing.Count) unresolved INF reference(s)" "WARN"
                 }
             }
         }
@@ -367,7 +425,7 @@ function InstallDrivers($VMName=$null) {
                     $rel = $sf.FullName.Substring($f.Length).TrimStart('\\')
                     $dstFile = Join-Path $d $rel
                     EnsureDir (Split-Path -Parent $dstFile)
-                    if (Test-Path $dstFile) { $folderSkipped++; $skippedFiles++; continue }
+                    if ((Test-Path $dstFile) -and (TestFileContentEqual $sf.FullName $dstFile)) { $folderSkipped++; $skippedFiles++; continue }
                     Copy-Item $sf.FullName $dstFile -Force -EA Stop
                     $folderCopied++; $copiedFiles++
                 }
@@ -388,11 +446,45 @@ function InstallDrivers($VMName=$null) {
 
         Write-Host ""; Log "Copying $($drv.Files.Count) system files..." "INFO"
         foreach ($f in $drv.Files) {
-            $dst = "$($mount.Path)$($f.D)"; EnsureDir (Split-Path -Parent $dst)
-            if ($skipExisting -and (Test-Path $dst)) { $skippedFiles++; continue }
+            $relDest = "$($f.D)"
+            if ($relDest -match '^[A-Za-z]:') { $relDest = $relDest.Substring(2) }
+            if (!$relDest.StartsWith("\")) { $relDest = "\" + $relDest.TrimStart('\\') }
+            $dst = "$($mount.Path)$relDest"; EnsureDir (Split-Path -Parent $dst)
+            if ($skipExisting -and (Test-Path $dst) -and (TestFileContentEqual $f.S $dst)) { $skippedFiles++; continue }
             $ok = (Try-Op { Copy-Item $f.S $dst -Force -EA Stop; return $true } "Copy $($f.N)").OK
             if ($ok) { $copiedFiles++; Log "+ $($f.N)" "SUCCESS" }
         }
+
+        $existingManifest = @(ReadDriverManifest $mount.Path)
+        $selectedGpuIds = @($gpuList | ForEach-Object { $_.DeviceID } | Where-Object { $_ } | Select-Object -Unique)
+        $keptManifest = @($existingManifest | Where-Object { $_.GpuDeviceId -notin $selectedGpuIds })
+        $newManifest = @()
+
+        foreach ($gpu in $gpuList) {
+            if (!$gpu.DeviceID) { continue }
+            if (!$gpuDriverMap.ContainsKey($gpu.DeviceID)) { continue }
+
+            $gpuDrv = $gpuDriverMap[$gpu.DeviceID]
+            $folderDest = @($gpuDrv.Folders | ForEach-Object { "\Windows\System32\HostDriverStore\FileRepository\$(Split-Path -Leaf $_)" } | Sort-Object -Unique)
+            $fileDest = @($gpuDrv.Files | ForEach-Object { $_.D } | Sort-Object -Unique)
+            if ((!$folderDest) -and (!$fileDest)) { continue }
+
+            $newManifest += [PSCustomObject]@{
+                EntryId = [Guid]::NewGuid().Guid
+                CapturedUtc = (Get-Date).ToUniversalTime().ToString("o")
+                VMName = $VMName
+                GpuDeviceId = $gpu.DeviceID
+                GpuName = $gpu.DeviceName
+                Resolver = if ($gpuDrv.Strategy) { $gpuDrv.Strategy } else { "Unknown" }
+                InfPath = if ($gpuDrv.InfPath) { $gpuDrv.InfPath } else { $null }
+                Missing = @($gpuDrv.Missing)
+                Folders = $folderDest
+                Files = $fileDest
+            }
+        }
+
+        WriteDriverManifest $mount.Path @($keptManifest + $newManifest)
+        if ($newManifest.Count -gt 0) { Log "Driver manifest updated with $($newManifest.Count) GPU record(s)" "INFO" }
 
         Write-Host ""; Box "DRIVER INJECTION COMPLETE" "-"
         Log "Copied $copiedFiles file(s) across $copiedFolders folder copy operation(s)" "SUCCESS"

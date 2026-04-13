@@ -85,6 +85,47 @@ function Try-Op($Code, $Op, $Ok=$null, $OnFail=$null) {
 
 function EnsureDir($P) { if (!(Test-Path $P)) { New-Item $P -ItemType Directory -Force -EA SilentlyContinue | Out-Null } }
 
+function GetDriverManifestFilePath($MountPath) {
+    if ([string]::IsNullOrWhiteSpace($MountPath)) { return $null }
+    return (Join-Path $MountPath "Windows\System32\HostDriverStore\gpu-driver-manifest.json")
+}
+
+function ReadDriverManifest($MountPath) {
+    $manifestPath = GetDriverManifestFilePath $MountPath
+    if (!$manifestPath -or !(Test-Path $manifestPath)) { return @() }
+    try {
+        $raw = Get-Content $manifestPath -Raw -EA Stop
+        if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+        $parsed = $raw | ConvertFrom-Json -EA Stop
+        if ($parsed -is [System.Array]) { return @($parsed) }
+        return @($parsed)
+    } catch {
+        Log "Could not parse driver manifest at $manifestPath. A new manifest will be created." "WARN"
+        return @()
+    }
+}
+
+function WriteDriverManifest($MountPath, $Entries) {
+    $manifestPath = GetDriverManifestFilePath $MountPath
+    if (!$manifestPath) { return }
+    EnsureDir (Split-Path -Parent $manifestPath)
+    @($Entries) | ConvertTo-Json -Depth 8 | Out-File $manifestPath -Encoding UTF8 -Force
+}
+
+function TestFileContentEqual($SourcePath, $DestinationPath) {
+    if (!(Test-Path $SourcePath) -or !(Test-Path $DestinationPath)) { return $false }
+    try {
+        $srcItem = Get-Item $SourcePath -EA Stop
+        $dstItem = Get-Item $DestinationPath -EA Stop
+        if ($srcItem.Length -ne $dstItem.Length) { return $false }
+        $srcHash = (Get-FileHash -Path $SourcePath -Algorithm SHA256 -EA Stop).Hash
+        $dstHash = (Get-FileHash -Path $DestinationPath -Algorithm SHA256 -EA Stop).Hash
+        return ($srcHash -eq $dstHash)
+    } catch {
+        return $false
+    }
+}
+
 function Confirm($M) {
     while ($true) {
         $r = (Read-Host "  [Confirm] $M [Y/N]").Trim()

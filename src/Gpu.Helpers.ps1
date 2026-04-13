@@ -203,37 +203,180 @@ function SelectGPU($Title="SELECT GPU", [switch]$Partition) {
     }
 }
 
-function GetDrivers($GPU) {
-    Box "ANALYZING GPU DRIVERS" "-"
-    Log "GPU: $($GPU.DeviceName)" "INFO"
-    Log "Provider: $($GPU.DriverProviderName) | Version: $($GPU.DriverVersion)" "INFO"; Write-Host ""
-    Spin "Finding INF file..." 1
+function NormalizeDriverPath($Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $p = $Path.Trim().Trim('"')
+    if ($p -match '^\\\\\?\?\\') { $p = $p.Substring(4) }
+    elseif ($p -match '^\\\\\?\\') { $p = $p.Substring(4) }
+
+    if ($p -match "^%SystemRoot%\\") { return (Join-Path $env:windir $p.Substring(12)) }
+    if ($p -match "^\\SystemRoot\\") { return (Join-Path $env:windir $p.Substring(12)) }
+    if ($p -match "^System32\\") { return (Join-Path (Join-Path $env:windir "System32") $p.Substring(9)) }
+    return $p
+}
+
+function GetDriverStoreFolderRoot($Path) {
+    $norm = NormalizeDriverPath $Path
+    if (!$norm) { return $null }
+    $base = "C:\Windows\System32\DriverStore\FileRepository\"
+    if ($norm -notlike "$base*") { return $null }
+    $tail = $norm.Substring($base.Length)
+    if ([string]::IsNullOrWhiteSpace($tail)) { return $null }
+    $folder = $tail.Split('\\')[0]
+    if ([string]::IsNullOrWhiteSpace($folder)) { return $null }
+    return (Join-Path $base $folder).TrimEnd('\\')
+}
+
+function ResolveInfPathForGpu($GPU) {
+    if ($GPU -and $GPU.PSObject.Properties["InfName"] -and $GPU.InfName) {
+        $direct = Join-Path "$env:windir\INF" $GPU.InfName
+        if (Test-Path $direct) { return $direct }
+    }
+
+    if (!$GPU -or !$GPU.DeviceID) { return $null }
     $inf = Get-ChildItem $script:GPUReg -EA SilentlyContinue | ForEach-Object {
         $p = Get-ItemProperty $_.PSPath -EA SilentlyContinue
         if ($p.MatchingDeviceId -and ($GPU.DeviceID -like "*$($p.MatchingDeviceId)*" -or $p.MatchingDeviceId -like "*$($GPU.DeviceID)*")) { $p.InfPath }
     } | Select-Object -First 1
-    if (!$inf) { Log "GPU not found in registry" "ERROR"; return $null }
-    $infPath = "C:\Windows\INF\$inf"
-    if (!(Test-Path $infPath)) { Log "INF file missing: $infPath" "ERROR"; return $null }
-    Log "Found: $inf" "SUCCESS"
-    Spin "Parsing driver files..." 1
-    $content = Get-Content $infPath -Raw
-    $refs = @('\.sys','\.dll','\.exe','\.cat','\.inf','\.bin','\.vp','\.cpa') | ForEach-Object { [regex]::Matches($content, "[\w\-\.]+$_", 2) | ForEach-Object { $_.Value } } | Sort-Object -Unique
-    Log "Found $($refs.Count) file references" "SUCCESS"; Write-Host ""
-    Spin "Locating files on disk..." 2
-    $search = @(@{P="C:\Windows\System32\DriverStore\FileRepository"; T="Store"; R=$true}, @{P="C:\Windows\System32"; T="Sys"; R=$false}, @{P="C:\Windows\SysWow64"; T="Wow"; R=$false})
-    $files = @(); $folders = @()
-    foreach ($r in $refs) {
-        foreach ($sp in $search) {
-            $f = Get-ChildItem -Path $sp.P -Filter $r -Recurse:$sp.R -EA SilentlyContinue | Select-Object -First 1
-            if ($f) {
-                if ($sp.T -eq "Store") { if ($f.DirectoryName -notin $folders) { $folders += $f.DirectoryName } }
-                else { $files += [PSCustomObject]@{N=$r; S=$f.FullName; D=$f.FullName.Replace("C:","")} }
-                break
+    if (!$inf) { return $null }
+
+    $infPath = Join-Path "$env:windir\INF" $inf
+    if (Test-Path $infPath) { return $infPath }
+    return $null
+}
+
+function GetInfReferences($InfPath) {
+    if (!(Test-Path $InfPath)) { return @() }
+    $content = Get-Content $InfPath -Raw -EA SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($content)) { return @() }
+
+    $patterns = @('\.sys','\.dll','\.exe','\.cat','\.inf','\.bin','\.vp','\.cpa','\.dat','\.cfg','\.json','\.ini','\.mui','\.pnf')
+    $refs = @($patterns | ForEach-Object {
+        [regex]::Matches($content, "[\w\-\.]+$_", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) | ForEach-Object { $_.Value }
+    } | Sort-Object -Unique)
+    return $refs
+}
+
+function GetDrivers($GPU) {
+    Box "ANALYZING GPU DRIVERS" "-"
+    if (!$GPU) { Log "No GPU metadata provided" "ERROR"; return $null }
+
+    Log "GPU: $($GPU.DeviceName)" "INFO"
+    Log "Provider: $($GPU.DriverProviderName) | Version: $($GPU.DriverVersion)" "INFO"
+    Write-Host ""
+
+    $resolvedMap = @{}
+    $missingRefs = @()
+    $strategy = "WmiAssociation"
+
+    $addResolved = {
+        param($Candidate)
+        $norm = NormalizeDriverPath $Candidate
+        if (!$norm) { return }
+        if (Test-Path $norm) { $resolvedMap[$norm.ToLowerInvariant()] = $norm }
+    }
+
+    Spin "Resolving package files..." 1
+    $assoc = @()
+    if ($GPU.DeviceID) {
+        $modifiedDeviceId = "$($GPU.DeviceID)".Replace("\", "\\")
+        $antecedent = "\\$env:COMPUTERNAME\ROOT\cimv2:Win32_PnPSignedDriver.DeviceID=" + '"' + $modifiedDeviceId + '"'
+        $assoc = @(Get-WmiObject Win32_PnPSignedDriverCIMDataFile -EA SilentlyContinue | Where-Object { $_.Antecedent -eq $antecedent })
+    }
+
+    foreach ($a in $assoc) {
+        if ($a.Dependent -match 'Name="(.+)"') {
+            $path = $matches[1] -replace "\\\\", "\\"
+            & $addResolved $path
+        }
+    }
+
+    if ($assoc.Count -gt 0) { Log "Package association returned $($assoc.Count) file link(s)" "SUCCESS" }
+    else { Log "Package association yielded no files; INF fallback will be used" "WARN" }
+
+    $serviceName = $null
+    if ($GPU.PSObject.Properties["DriverName"] -and $GPU.DriverName) { $serviceName = "$($GPU.DriverName)" }
+    if ($serviceName) {
+        $svc = Get-WmiObject Win32_SystemDriver -EA SilentlyContinue | Where-Object { $_.Name -eq $serviceName } | Select-Object -First 1
+        if ($svc -and $svc.PathName) {
+            $bin = "$($svc.PathName)".Trim()
+            $binPath = if ($bin.StartsWith('"')) {
+                ([regex]::Match($bin, '^"([^"]+)"')).Groups[1].Value
+            } else {
+                $bin.Split(' ')[0]
+            }
+            if ($binPath) { & $addResolved $binPath }
+        }
+    }
+
+    Spin "Analyzing INF references..." 1
+    $infPath = ResolveInfPathForGpu $GPU
+    if ($infPath) {
+        & $addResolved $infPath
+        $refs = @(GetInfReferences $infPath)
+        Log "Found $($refs.Count) INF file reference(s)" "INFO"
+        $search = @(
+            @{P="C:\Windows\System32\DriverStore\FileRepository"; R=$true},
+            @{P="C:\Windows\System32"; R=$false},
+            @{P="C:\Windows\SysWow64"; R=$false},
+            @{P="C:\Windows\INF"; R=$false}
+        )
+        foreach ($r in $refs) {
+            $found = $false
+            foreach ($sp in $search) {
+                $f = Get-ChildItem -Path $sp.P -Filter $r -Recurse:$sp.R -EA SilentlyContinue | Select-Object -First 1
+                if ($f) {
+                    & $addResolved $f.FullName
+                    $found = $true
+                    break
+                }
+            }
+            if (!$found) { $missingRefs += $r }
+        }
+    } else {
+        Log "Could not resolve INF path for this GPU" "WARN"
+    }
+
+    if ($resolvedMap.Count -eq 0) {
+        Log "No driver files were resolved" "ERROR"
+        return $null
+    }
+
+    Spin "Classifying files..." 1
+    $folderMap = @{}
+    $fileMap = @{}
+
+    foreach ($path in ($resolvedMap.Values | Sort-Object -Unique)) {
+        $driverStoreRoot = GetDriverStoreFolderRoot $path
+        if ($driverStoreRoot) {
+            $folderMap[$driverStoreRoot.ToLowerInvariant()] = $driverStoreRoot
+            continue
+        }
+
+        if ($path -match '^[A-Za-z]:\\') {
+            $dest = $path -replace '^[A-Za-z]:', ''
+            $key = $dest.ToLowerInvariant()
+            if (!$fileMap.ContainsKey($key)) {
+                $fileMap[$key] = [PSCustomObject]@{N=(Split-Path -Leaf $path); S=$path; D=$dest}
             }
         }
     }
-    Log "Located $($files.Count) files + $($folders.Count) folders" "SUCCESS"; Write-Host ""
-    return @{Files=$files; Folders=$folders}
+
+    if ($assoc.Count -eq 0) { $strategy = "InfFallback" }
+    elseif ($missingRefs.Count -gt 0) { $strategy = "WmiAssociation+InfFallback" }
+
+    $files = @($fileMap.Values | Sort-Object D)
+    $folders = @($folderMap.Values | Sort-Object)
+    Log "Located $($files.Count) files + $($folders.Count) folders" "SUCCESS"
+    if ($missingRefs.Count -gt 0) { Log "$($missingRefs.Count) INF reference(s) were unresolved" "WARN" }
+    Write-Host ""
+
+    return @{
+        Files = $files
+        Folders = $folders
+        Missing = @($missingRefs | Sort-Object -Unique)
+        Strategy = $strategy
+        InfPath = $infPath
+    }
 }
 #endregion
