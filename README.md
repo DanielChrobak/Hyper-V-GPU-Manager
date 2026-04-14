@@ -8,6 +8,8 @@ A comprehensive PowerShell tool for GPU partitioning (GPU-PV) in Hyper-V virtual
 - **GPU Partitioning** - Allocate resources (1-100%) per partition adapter, including multiple partitionable devices on the same VM
 - **Driver Injection** - Automatically inject host partition-device drivers into VM disks using package-aware discovery with INF fallback
 - **Unattended Install Media** - Create setup media with injected `autounattend.xml`
+- **Non-Interactive CLI Commands** - Run repeatable operations in scripts and pipelines (`-Command create-vm`, `set-gpu`, etc.)
+- **Reusable API Layer** - Automation and future GUI clients call a stable API surface instead of menu-only flows
 - **VM Management** - View, configure, and delete VMs with GPU assignments
 - **Error Handling** - Clear blocking errors with pauses, plus non-blocking warnings for partial driver resolution/copy scenarios
 - **PowerShell 5.1 Compatible** - Works on Windows 10/11 without PowerShell 7
@@ -41,19 +43,53 @@ A comprehensive PowerShell tool for GPU partitioning (GPU-PV) in Hyper-V virtual
 
 **Alternative:** Run from PowerShell:
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File "HyperV-GPU-Virtualization-Manager.ps1"
+powershell.exe -ExecutionPolicy Bypass -File "HyperV-GPU-Virtualization-Manager.ps1" -Command help
 ```
 
 ### Project Layout
 
 - `Run-HyperV-GPU-Virtualization-Manager.cmd` - Recommended launcher (handles ExecutionPolicy bypass)
-- `HyperV-GPU-Virtualization-Manager.ps1` - Main entry script
-- `src\Config.Helpers.ps1` - Configuration + shared UI/helpers
-- `src\Gpu.Helpers.ps1` - GPU discovery and driver lookup helpers
-- `src\Vhd.Operations.ps1` - VHD mount/unmount and secure path helpers
-- `src\Vm.Helpers.ps1` - VM selection and state helpers
-- `src\AutoInstallIso.ps1` - Automated install ISO generation
-- `src\Main.Functions.ps1` - Main feature operations (create VM, partition GPU, drivers, delete/list/info)
+- `HyperV-GPU-Virtualization-Manager.ps1` - Main bootstrap entry script (interactive + non-interactive command mode)
+- `src\Core\` - Domain and platform modules used by all hosts
+- `src\Core\Gpu\Gpu.Helpers.ps1` - GPU discovery and driver lookup helpers
+- `src\Core\Main.Actions.ps1` - Core VM/GPU action implementations (supports interactive and non-interactive execution)
+- `src\Api\Manager.Api.ps1` - API surface returning structured result objects
+- `src\Cli\Interactive.Menu.ps1` - Menu-driven UI host
+- `src\Cli\Command.Dispatcher.ps1` - Command-based CLI host
+- `src\*.ps1` - Compatibility shims that dot-source the new Core module paths
+
+### Non-Interactive CLI Mode
+
+The script now supports command-based execution for automation.
+
+```powershell
+# List available commands
+powershell.exe -ExecutionPolicy Bypass -File "HyperV-GPU-Virtualization-Manager.ps1" -Command help
+
+# Create a VM from preset defaults
+powershell.exe -ExecutionPolicy Bypass -File "HyperV-GPU-Virtualization-Manager.ps1" -Command create-vm -Preset gaming -VMName Gaming-VM -IsoPath C:\ISOs\Win11.iso -OverwriteVhd
+
+# Assign 50% of a specific partitionable GPU to a VM
+powershell.exe -ExecutionPolicy Bypass -File "HyperV-GPU-Virtualization-Manager.ps1" -Command set-gpu -VMName Gaming-VM -GpuPath "PCIROOT(...)" -GpuPercent 50
+
+# Inject drivers for all assigned GPU partitions on a VM
+powershell.exe -ExecutionPolicy Bypass -File "HyperV-GPU-Virtualization-Manager.ps1" -Command install-drivers -VMName Gaming-VM -All -SkipExisting
+
+# Output machine-readable JSON
+powershell.exe -ExecutionPolicy Bypass -File "HyperV-GPU-Virtualization-Manager.ps1" -Command list-vms -Json
+```
+
+Available command values:
+- `interactive`
+- `preflight`
+- `create-vm`
+- `set-gpu`
+- `remove-gpu`
+- `install-drivers`
+- `delete-vm`
+- `list-vms`
+- `list-gpus`
+- `help`
 
 ---
 
@@ -544,7 +580,7 @@ These settings are:
 ## Advanced Usage
 
 ### Customizing VM Presets
-Edit the `$script:Presets` block in `src\Config.Helpers.ps1` to add or modify presets:
+Edit the `$script:Presets` block in `src\Core\Config.Helpers.ps1` to add or modify presets:
 ```powershell
 $script:Presets = @(
    @{L="Your Custom | 16CPU, 64GB, 1TB"; N="Custom-VM"; C=16; R=64; S=1024},
@@ -553,28 +589,34 @@ $script:Presets = @(
 ```
 
 ### Custom Unattended Installation XML
-Modify `$script:AutoXML` in `src\AutoInstallIso.ps1` to customize:
+Modify `$script:AutoXMLTemplate` in `src\Core\AutoInstallIso.ps1` to customize:
 - Language/locale settings
 - Time zone
 - Product key
 - Computer name
 - Partition layout
 
-### Scripted VM Creation
-Call functions directly from PowerShell:
+### API-First Scripting
+Call the API layer directly from PowerShell:
 ```powershell
-# Load function files without starting the interactive menu
+# Load modules without starting the interactive menu
 $root = "C:\Path\To\Hyper-V-GPU-Manager-main"
-. "$root\src\Config.Helpers.ps1"
-. "$root\src\Gpu.Helpers.ps1"
-. "$root\src\Vhd.Operations.ps1"
-. "$root\src\Vm.Helpers.ps1"
-. "$root\src\AutoInstallIso.ps1"
-. "$root\src\Main.Functions.ps1"
+. "$root\src\Core\Config.Helpers.ps1"
+. "$root\src\Core\Gpu\Gpu.Helpers.ps1"
+. "$root\src\Core\Vhd.Operations.ps1"
+. "$root\src\Core\Vm.Helpers.ps1"
+. "$root\src\Core\AutoInstallIso.ps1"
+. "$root\src\Core\Main.Actions.ps1"
+. "$root\src\Api\Manager.Api.ps1"
 
-# Use direct function calls
-SetGPU -VMName "My-VM" -Pct 50
-InstallDrivers -VMName "My-VM"
+# Create VM via API
+$create = Invoke-HyperVGpuApiCreateVm -Name "My-VM" -Cpu 8 -RamGB 16 -StorageGB 256 -VhdPath "C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\" -IsoPath "C:\ISOs\Win11.iso" -OverwriteVhd
+
+# Assign GPU partition via API
+$gpu = Invoke-HyperVGpuApiSetGpu -VmName "My-VM" -Percent 50 -GpuPath "PCIROOT(...)"
+
+# Inject drivers for all assigned partitions
+$drivers = Invoke-HyperVGpuApiInstallDrivers -VmName "My-VM" -All -SkipExisting
 ```
 
 ### Batch Operations

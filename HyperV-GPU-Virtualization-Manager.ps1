@@ -1,14 +1,68 @@
-﻿if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")) {
-    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs; exit
+﻿param(
+    [ValidateSet("interactive", "preflight", "create-vm", "set-gpu", "remove-gpu", "install-drivers", "delete-vm", "list-vms", "list-gpus", "help")]
+    [string]$Command = "interactive",
+    [string]$VMName,
+    [string]$GpuPath,
+    [string]$GpuName,
+    [ValidateRange(0, 100)]
+    [int]$GpuPercent = 0,
+    [ValidateSet("gaming", "development", "ml", "ml-training", "custom")]
+    [string]$Preset = "development",
+    [int]$Cpu = 0,
+    [int]$RamGB = 0,
+    [int]$StorageGB = 0,
+    [string]$VhdPath,
+    [string]$IsoPath,
+    [switch]$EnableAutoInstall,
+    [int]$InstallImageIndex = 0,
+    [string]$UnattendUsername,
+    [string]$UnattendPassword,
+    [switch]$OverwriteVhd,
+    [switch]$All,
+    [switch]$CleanDrivers,
+    [switch]$SkipExisting,
+    [switch]$DeleteFiles,
+    [switch]$Force,
+    [switch]$SkipPreflight,
+    [switch]$Json
+)
+
+function Get-RelaunchArgumentList([string]$ScriptPath, [hashtable]$BoundParameters) {
+    $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath)
+    foreach ($key in ($BoundParameters.Keys | Sort-Object)) {
+        $value = $BoundParameters[$key]
+        if ($value -is [System.Management.Automation.SwitchParameter]) {
+            if ($value.IsPresent) {
+                $args += "-$key"
+            }
+            continue
+        }
+
+        if ($null -eq $value) { continue }
+        if ($value -is [string] -and [string]::IsNullOrWhiteSpace($value)) { continue }
+
+        $args += "-$key"
+        $args += "$value"
+    }
+    return $args
+}
+
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")) {
+    $relaunchArgs = Get-RelaunchArgumentList -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters
+    Start-Process powershell.exe -ArgumentList $relaunchArgs -Verb RunAs | Out-Null
+    exit
 }
 
 $moduleFiles = @(
-    "src\Config.Helpers.ps1",
-    "src\Gpu.Helpers.ps1",
-    "src\Vhd.Operations.ps1",
-    "src\Vm.Helpers.ps1",
-    "src\AutoInstallIso.ps1",
-    "src\Main.Functions.ps1"
+    "src\Core\Config.Helpers.ps1",
+    "src\Core\Gpu\Gpu.Helpers.ps1",
+    "src\Core\Vhd.Operations.ps1",
+    "src\Core\Vm.Helpers.ps1",
+    "src\Core\AutoInstallIso.ps1",
+    "src\Core\Main.Actions.ps1",
+    "src\Api\Manager.Api.ps1",
+    "src\Cli\Interactive.Menu.ps1",
+    "src\Cli\Command.Dispatcher.ps1"
 )
 
 foreach ($moduleFile in $moduleFiles) {
@@ -17,66 +71,20 @@ foreach ($moduleFile in $moduleFiles) {
     . $modulePath
 }
 
-function InvokeStartupPreflight {
-    Box "STARTUP CHECKS" "-"
-
-    $requiredCmdlets = @(
-        "Get-VM",
-        "New-VM",
-        "Set-VM",
-        "Get-VMGpuPartitionAdapter",
-        "Add-VMGpuPartitionAdapter",
-        "Set-VMGpuPartitionAdapter",
-        "Remove-VMGpuPartitionAdapter"
-    )
-    $missingCmdlets = @($requiredCmdlets | Where-Object { !(Get-Command $_ -EA SilentlyContinue) })
-    if ($missingCmdlets.Count -gt 0) {
-        Log "Hyper-V cmdlets unavailable: $($missingCmdlets -join ', ')" "ERROR"
-        Log "Enable Hyper-V and restart Windows, then run this tool again." "ERROR"
-        return $false
+if (!$SkipPreflight -and $Command -ne "help" -and $Command -ne "preflight") {
+    $preflightResult = Invoke-HyperVGpuApiPreflight
+    if (!$preflightResult.Success) {
+        if ($Json) {
+            $preflightResult | ConvertTo-Json -Depth 10
+        }
+        if ($Command -eq "interactive") {
+            Pause
+        }
+        exit 1
     }
-
-    $edition = $null
-    try { $edition = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -EA Stop).EditionID } catch {}
-    if ($edition -and $edition -match "Home") {
-        Log "Detected Windows edition '$edition'. Hyper-V GPU workloads are typically unavailable on Home editions." "WARN"
-    }
-
-    $vmms = Get-Service -Name "vmms" -EA SilentlyContinue
-    if ($vmms -and $vmms.Status -ne "Running") {
-        Log "Hyper-V Virtual Machine Management service is not running." "WARN"
-    }
-
-    $partitionable = @()
-    try { $partitionable = @(GetPartitionableGPUs) } catch {}
-    if ($partitionable.Count -gt 0) {
-        Log "Detected $($partitionable.Count) partitionable host device(s)." "SUCCESS"
-    } else {
-        Log "No partitionable devices detected right now. GPU Partition may fail until host prerequisites are met." "WARN"
-    }
-
-    Write-Host ""
-    return $true
 }
 
-if (!(InvokeStartupPreflight)) {
-    Pause
+$ok = Invoke-HyperVGpuCliCommand -Command $Command -VMName $VMName -GpuPath $GpuPath -GpuName $GpuName -GpuPercent $GpuPercent -Preset $Preset -Cpu $Cpu -RamGB $RamGB -StorageGB $StorageGB -VhdPath $VhdPath -IsoPath $IsoPath -EnableAutoInstall:$EnableAutoInstall -InstallImageIndex $InstallImageIndex -UnattendUsername $UnattendUsername -UnattendPassword $UnattendPassword -OverwriteVhd:$OverwriteVhd -All:$All -CleanDrivers:$CleanDrivers -SkipExisting:$SkipExisting -DeleteFiles:$DeleteFiles -Force:$Force -Json:$Json
+if (!$ok) {
     exit 1
-}
-
-$menu = @("Create VM", "GPU Partition", "Unassign GPU", "Install Drivers", "Delete VM", "List VMs", "GPU Info", "Exit")
-while ($true) {
-    $ch = Menu $menu "MAIN MENU"
-    if ($null -eq $ch) { Log "Cancelled" "INFO"; continue }
-    Write-Host ""
-    switch ($ch) {
-        0 { $createResult = NewVM; if ($null -ne $createResult) { Pause } }
-        1 { $setResult = SetGPU; if ($null -ne $setResult) { Pause } }
-        2 { $removeResult = RemoveGPU; if ($null -ne $removeResult) { Pause } }
-        3 { $installResult = InstallDrivers; if ($null -ne $installResult) { Pause } }
-        4 { $deleteResult = DeleteVM; if ($null -ne $deleteResult) { Pause } }
-        5 { ShowVMs }
-        6 { ShowGPUs }
-        7 { Log "Goodbye!" "INFO"; exit }
-    }
 }
