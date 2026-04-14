@@ -187,9 +187,6 @@ function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null) {
         $encodeAlloc = GetGpuPartitionResourceAllocation -PartitionableGpu $partitionableGpu -ResourceName "Encode" -Percent $Pct -Fallback 1000000000
         $decodeAlloc = GetGpuPartitionResourceAllocation -PartitionableGpu $partitionableGpu -ResourceName "Decode" -Percent $Pct -Fallback 1000000000
         $computeAlloc = GetGpuPartitionResourceAllocation -PartitionableGpu $partitionableGpu -ResourceName "Compute" -Percent $Pct -Fallback 1000000000
-        if ($encodeAlloc.IsUnbounded) {
-            Log "Host reports Encode as unbounded (UInt64::MaxValue). Applying full encode range instead of percentage scaling." "INFO"
-        }
         $partitionParams = @{
             MinPartitionVRAM = $vramAlloc.Min
             MaxPartitionVRAM = $vramAlloc.Max

@@ -129,7 +129,7 @@ Allocates GPU resources to a virtual machine.
 
 **Notes:**
 - Allocation percentage applies to all resource types equally
-- Some hosts report Encode capacity as `UInt64::MaxValue` (`18446744073709551615`). The script treats this as unbounded and applies full encode range instead of percentage-scaling a synthetic fallback.
+- Some hosts report Encode capacity as `UInt64::MaxValue` (`18446744073709551615`). The script ignores that sentinel value and percentage-scales Encode using the fallback baseline (`1000000000`) for consistent behavior.
 - Removing GPU partition also cleans up MMIO settings
 - Running GPU Partition again for the same GPU updates that adapter's percentage
 - Running GPU Partition for a different GPU adds another adapter with its own percentage (when `-InstancePath` is supported on the host)

@@ -86,41 +86,7 @@ function GetGpuPartitionResourceCapacity($PartitionableGpu, $ResourceName, [UInt
     return [UInt64]$Fallback
 }
 
-function TestGpuPartitionResourceUnbounded($PartitionableGpu, $ResourceName) {
-    if (!$PartitionableGpu -or [string]::IsNullOrWhiteSpace($ResourceName)) { return $false }
-
-    $candidates = @("Total$ResourceName", "Available$ResourceName", "MaxPartition$ResourceName", "OptimalPartition$ResourceName")
-    $seen = $false
-    $hasFinite = $false
-    $hasUnbounded = $false
-
-    foreach ($key in $candidates) {
-        if (!$PartitionableGpu.PSObject.Properties[$key]) { continue }
-        try {
-            $value = [UInt64]$PartitionableGpu.$key
-            $seen = $true
-            if ($value -eq [UInt64]::MaxValue) {
-                $hasUnbounded = $true
-                continue
-            }
-            if ($value -gt 0) { $hasFinite = $true }
-        } catch {}
-    }
-
-    return ($seen -and $hasUnbounded -and !$hasFinite)
-}
-
 function GetGpuPartitionResourceAllocation($PartitionableGpu, $ResourceName, $Percent, [UInt64]$Fallback=1000000000) {
-    if (TestGpuPartitionResourceUnbounded -PartitionableGpu $PartitionableGpu -ResourceName $ResourceName) {
-        return [PSCustomObject]@{
-            Min = [UInt64]0
-            Max = [UInt64]::MaxValue
-            Optimal = [UInt64]::MaxValue
-            Capacity = [UInt64]::MaxValue
-            IsUnbounded = $true
-        }
-    }
-
     $pct = [Math]::Max(1, [Math]::Min(100, [int]$Percent))
     $capacity = GetGpuPartitionResourceCapacity -PartitionableGpu $PartitionableGpu -ResourceName $ResourceName -Fallback $Fallback
     $desired = [UInt64]([Math]::Max([decimal]1, [Math]::Floor(([decimal]$capacity * [decimal]$pct) / 100)))
