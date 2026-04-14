@@ -21,7 +21,15 @@ function NewVM {
     if ($cfg.ISO -and (Test-Path $cfg.ISO)) {
         Write-Host ""
         if (Confirm "Enable automated Windows installation? (Skips most setup screens)") {
-            $iso = NewAutoISO $cfg.ISO $cfg.Name
+            $imageSelection = $null
+            $imageOptions = GetWindowsInstallImageOptions $cfg.ISO
+            if ($imageOptions -and $imageOptions.Count -gt 0) {
+                $imageSelection = PromptWindowsInstallImageSelection $imageOptions
+            } else {
+                Log "Could not enumerate Windows installation options; setup edition selection will remain manual." "INFO"
+            }
+
+            $iso = NewAutoISO $cfg.ISO $cfg.Name $imageSelection
             if ($iso) { Log "Will use automated installation ISO" "SUCCESS"; Write-Host "" }
             else { Log "Falling back to original ISO" "WARN"; $iso = $cfg.ISO; Write-Host "" }
         } else { $iso = $cfg.ISO }

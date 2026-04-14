@@ -1,16 +1,16 @@
 ﻿#region Auto Install ISO
-$script:AutoXML = @'
+$script:AutoXMLTemplate = @'
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
     <settings pass="windowsPE">
         <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
             <SetupUILanguage>
-                <UILanguage>en-US</UILanguage>
+                <UILanguage>__UI_LANGUAGE__</UILanguage>
             </SetupUILanguage>
-            <InputLocale>en-US</InputLocale>
-            <SystemLocale>en-US</SystemLocale>
-            <UILanguage>en-US</UILanguage>
-            <UserLocale>en-US</UserLocale>
+            <InputLocale>__INPUT_LOCALE__</InputLocale>
+            <SystemLocale>__SYSTEM_LOCALE__</SystemLocale>
+            <UILanguage>__UI_LANGUAGE__</UILanguage>
+            <UserLocale>__USER_LOCALE__</UserLocale>
         </component>
         <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
             <UserData>
@@ -76,6 +76,7 @@ $script:AutoXML = @'
             </DiskConfiguration>
             <ImageInstall>
                 <OSImage>
+                    __IMAGE_SELECTION__
                     <InstallTo>
                         <DiskID>0</DiskID>
                         <PartitionID>4</PartitionID>
@@ -91,6 +92,12 @@ $script:AutoXML = @'
         </component>
     </settings>
     <settings pass="oobeSystem">
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <InputLocale>__INPUT_LOCALE__</InputLocale>
+            <SystemLocale>__SYSTEM_LOCALE__</SystemLocale>
+            <UILanguage>__UI_LANGUAGE__</UILanguage>
+            <UserLocale>__USER_LOCALE__</UserLocale>
+        </component>
         <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
             <OOBE>
                 <HideEULAPage>true</HideEULAPage>
@@ -105,7 +112,167 @@ $script:AutoXML = @'
 </unattend>
 '@
 
-function NewAutoISO($Src, $VM) {
+function XmlEsc($Value) {
+    if ($null -eq $Value) { return "" }
+    return [System.Security.SecurityElement]::Escape([string]$Value)
+}
+
+function GetHostLocaleSettings {
+    $fallback = "en-US"
+    $inputLocale = $fallback; $systemLocale = $fallback; $uiLanguage = $fallback; $userLocale = $fallback
+
+    try { $systemLocale = (Get-WinSystemLocale).Name } catch {}
+    try { $userLocale = (Get-Culture).Name } catch {}
+    try {
+        $uiOverride = Get-WinUILanguageOverride
+        if (![string]::IsNullOrWhiteSpace($uiOverride)) { $uiLanguage = $uiOverride }
+    } catch {}
+    if ([string]::IsNullOrWhiteSpace($uiLanguage) -or $uiLanguage -eq $fallback) {
+        try { $uiLanguage = (Get-UICulture).Name } catch {}
+    }
+
+    try {
+        $langList = Get-WinUserLanguageList
+        if ($langList -and $langList.Count -gt 0) {
+            $primary = $langList | Select-Object -First 1
+            if ($primary.InputMethodTips -and $primary.InputMethodTips.Count -gt 0 -and ![string]::IsNullOrWhiteSpace($primary.InputMethodTips[0])) {
+                $inputLocale = $primary.InputMethodTips[0]
+            } elseif (![string]::IsNullOrWhiteSpace($primary.LanguageTag)) {
+                $inputLocale = $primary.LanguageTag
+            }
+        }
+    } catch {}
+
+    if ([string]::IsNullOrWhiteSpace($systemLocale)) { $systemLocale = $fallback }
+    if ([string]::IsNullOrWhiteSpace($userLocale)) { $userLocale = $systemLocale }
+    if ([string]::IsNullOrWhiteSpace($uiLanguage)) { $uiLanguage = $systemLocale }
+    if ([string]::IsNullOrWhiteSpace($inputLocale)) { $inputLocale = $userLocale }
+
+    return [PSCustomObject]@{
+        InputLocale  = $inputLocale
+        SystemLocale = $systemLocale
+        UILanguage   = $uiLanguage
+        UserLocale   = $userLocale
+    }
+}
+
+function GetWindowsSetupImagePath($MediaRoot) {
+    if ([string]::IsNullOrWhiteSpace($MediaRoot)) { return $null }
+    $candidates = @(
+        (Join-Path $MediaRoot "sources\install.wim"),
+        (Join-Path $MediaRoot "sources\install.esd")
+    )
+    return ($candidates | Where-Object { Test-Path $_ } | Select-Object -First 1)
+}
+
+function GetWindowsInstallImageOptions($IsoPath) {
+    if ([string]::IsNullOrWhiteSpace($IsoPath) -or !(Test-Path $IsoPath)) { return @() }
+
+    $mount = $null
+    try {
+        Spin "Scanning ISO installation options..." 1
+        $mount = Mount-DiskImage -ImagePath $IsoPath -PassThru -EA Stop
+        $drv = ($mount | Get-Volume).DriveLetter
+        if (!$drv) { throw "Could not get ISO drive letter" }
+
+        $imagePath = GetWindowsSetupImagePath "${drv}:"
+        if (!$imagePath) {
+            Log "No install.wim/install.esd found on ISO; edition auto-selection unavailable." "WARN"
+            return @()
+        }
+
+        if (!(Get-Command Get-WindowsImage -EA SilentlyContinue)) {
+            Log "Get-WindowsImage cmdlet is unavailable; edition auto-selection unavailable." "WARN"
+            return @()
+        }
+
+        $images = @(Get-WindowsImage -ImagePath $imagePath -EA Stop)
+        if (!$images) { return @() }
+
+        return @($images | ForEach-Object {
+            [PSCustomObject]@{
+                Index       = [int]$_.ImageIndex
+                Name        = "$($_.ImageName)"
+                Description = "$($_.ImageDescription)"
+                Version     = if ($_.Version) { "$($_.Version)" } else { "" }
+            }
+        } | Sort-Object Index)
+    } catch {
+        Log "Failed to enumerate Windows installation options: $_" "WARN"
+        return @()
+    } finally {
+        if ($mount) { Dismount-DiskImage -ImagePath $IsoPath -EA SilentlyContinue | Out-Null }
+    }
+}
+
+function PromptWindowsInstallImageSelection($ImageOptions) {
+    if (!$ImageOptions -or $ImageOptions.Count -eq 0) { return $null }
+
+    Write-Host ""
+    Box "WINDOWS INSTALLATION OPTIONS" "-"
+    foreach ($opt in $ImageOptions) {
+        $descText = if (![string]::IsNullOrWhiteSpace($opt.Description) -and $opt.Description -ne $opt.Name) { " | $($opt.Description)" } else { "" }
+        $verText = if (![string]::IsNullOrWhiteSpace($opt.Version)) { " | Version: $($opt.Version)" } else { "" }
+        Write-Host ("  [{0}] {1}{2}{3}" -f $opt.Index.ToString().PadLeft(2, '0'), $opt.Name, $verText, $descText) -ForegroundColor Gray
+    }
+    Write-Host ""
+
+    while ($true) {
+        $raw = (Read-Host "  Installation index (press Enter to select manually during setup)").Trim()
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            Log "No installation index selected; setup edition selection will remain manual." "INFO"
+            return $null
+        }
+
+        $idx = 0
+        if ([int]::TryParse($raw, [ref]$idx)) {
+            $choice = $ImageOptions | Where-Object { $_.Index -eq $idx } | Select-Object -First 1
+            if ($choice) {
+                Log ("Selected installation index {0}: {1}" -f $choice.Index, $choice.Name) "SUCCESS"
+                return [PSCustomObject]@{ Index = [int]$choice.Index; Name = "$($choice.Name)" }
+            }
+        }
+
+        Log "Invalid selection. Enter a listed index number or press Enter to skip." "WARN"
+    }
+}
+
+function BuildImageSelectionXml($ImageSelection) {
+    if (!$ImageSelection) { return "" }
+
+    $index = 0
+    if (![int]::TryParse("$($ImageSelection.Index)", [ref]$index) -or $index -le 0) { return "" }
+
+    return @"
+                    <InstallFrom>
+                        <MetaData wcm:action="add">
+                            <Key>/IMAGE/INDEX</Key>
+                            <Value>$index</Value>
+                        </MetaData>
+                    </InstallFrom>
+"@
+}
+
+function BuildAutoUnattendXml($LocaleSettings, $ImageSelection=$null) {
+    if (!$LocaleSettings) {
+        $LocaleSettings = [PSCustomObject]@{
+            InputLocale  = "en-US"
+            SystemLocale = "en-US"
+            UILanguage   = "en-US"
+            UserLocale   = "en-US"
+        }
+    }
+
+    $xml = $script:AutoXMLTemplate
+    $xml = $xml.Replace("__IMAGE_SELECTION__", (BuildImageSelectionXml $ImageSelection))
+    $xml = $xml.Replace("__INPUT_LOCALE__", (XmlEsc $LocaleSettings.InputLocale))
+    $xml = $xml.Replace("__SYSTEM_LOCALE__", (XmlEsc $LocaleSettings.SystemLocale))
+    $xml = $xml.Replace("__UI_LANGUAGE__", (XmlEsc $LocaleSettings.UILanguage))
+    $xml = $xml.Replace("__USER_LOCALE__", (XmlEsc $LocaleSettings.UserLocale))
+    return $xml
+}
+
+function NewAutoISO($Src, $VM, $ImageSelection=$null) {
     Box "AUTOMATED INSTALLATION SETUP" "-"; Log "Creating automated installation ISO..." "INFO"; Write-Host ""
     $mount = $null; $work = $null
     try {
@@ -124,7 +291,12 @@ function NewAutoISO($Src, $VM) {
         Get-ChildItem $work -Recurse | ForEach-Object { $_.Attributes = $_.Attributes -band (-bnot [System.IO.FileAttributes]::ReadOnly) }
         Log "ISO contents copied successfully" "SUCCESS"; Write-Host ""
         Spin "Creating autounattend.xml..." 1
-        $script:AutoXML | Out-File "$work\autounattend.xml" -Encoding UTF8 -Force
+        $locale = GetHostLocaleSettings
+        Log ("Using host locale settings: UI={0}, System={1}, User={2}, Keyboard={3}" -f $locale.UILanguage, $locale.SystemLocale, $locale.UserLocale, $locale.InputLocale) "INFO"
+        if ($ImageSelection -and $ImageSelection.Index) {
+            Log ("Using selected installation image index: {0}" -f $ImageSelection.Index) "INFO"
+        }
+        BuildAutoUnattendXml $locale $ImageSelection | Out-File "$work\autounattend.xml" -Encoding UTF8 -Force
         Log "autounattend.xml created" "SUCCESS"
         Spin "Dismounting source ISO..." 1
         Dismount-DiskImage -ImagePath $Src -EA SilentlyContinue | Out-Null; $mount = $null

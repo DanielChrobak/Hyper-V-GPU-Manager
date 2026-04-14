@@ -93,9 +93,9 @@ When providing an ISO path, you can build unattended Windows setup media:
 - **Creates modified ISO** with `autounattend.xml` injected
 - **Automatic disk partitioning** - Creates UEFI partitions (WINRE, EFI, MSR, Windows)
 - **Skips setup screens** - Bypasses EULA, privacy settings, etc
+- **Optional edition auto-selection** - During VM creation, you can pick a listed install image index (or press Enter to keep manual edition selection during setup)
 - **Still requires user interaction:**
-  - Windows edition selection during installation
-  - User account creation after first boot
+   - User account creation after first boot
 - **Requires Windows ADK** for ISO creation (oscdimg.exe)
 - **Fallback:** If ADK not installed, autounattend.xml saved to Desktop
 
