@@ -1,13 +1,16 @@
 ﻿#region GPU Helpers
 function GetPartitionableGPUs {
-    # Prefer newer cmdlet when present; fall back for older Windows builds.
-    $hostCmd = Get-Command Get-VMHostPartitionableGpu -EA SilentlyContinue
-    $legacyCmd = Get-Command Get-VMPartitionableGpu -EA SilentlyContinue
+    if (-not $script:GpuPartitionableCmdSupportInitialized) {
+        # Detect supported cmdlets once per session; command availability does not change at runtime.
+        $script:HasGetVmHostPartitionableGpu = [bool](Get-Command Get-VMHostPartitionableGpu -EA SilentlyContinue)
+        $script:HasGetVmPartitionableGpu = [bool](Get-Command Get-VMPartitionableGpu -EA SilentlyContinue)
+        $script:GpuPartitionableCmdSupportInitialized = $true
+    }
 
-    if ($hostCmd) {
+    if ($script:HasGetVmHostPartitionableGpu) {
         try { return @(Get-VMHostPartitionableGpu -EA Stop) }
         catch {
-            if ($legacyCmd) {
+            if ($script:HasGetVmPartitionableGpu) {
                 try { return @(Get-VMPartitionableGpu -EA Stop) }
                 catch { return @() }
             }
@@ -15,7 +18,7 @@ function GetPartitionableGPUs {
         }
     }
 
-    if ($legacyCmd) {
+    if ($script:HasGetVmPartitionableGpu) {
         try { return @(Get-VMPartitionableGpu -EA Stop) }
         catch { return @() }
     }
@@ -47,18 +50,91 @@ function GetGpuIdentityKey($Path) {
     return "$Path".ToUpperInvariant()
 }
 
+if (-not $script:GpuResolveCache) { $script:GpuResolveCache = @{} }
+if (-not $script:GpuDriverCache) { $script:GpuDriverCache = @{} }
+if (-not $script:GpuLookupCacheTtlSeconds) { $script:GpuLookupCacheTtlSeconds = 300 }
+if (-not $script:HyperVCapabilityCache) { $script:HyperVCapabilityCache = @{} }
+if (-not $script:GpuInfPathCache) { $script:GpuInfPathCache = @{} }
+if (-not $script:GpuRegDeviceInfEntriesLoaded) { $script:GpuRegDeviceInfEntriesLoaded = $false }
+if (-not $script:GpuRegDeviceInfEntries) { $script:GpuRegDeviceInfEntries = @() }
+
+function TestHyperVCmdletParameter($CmdletName, $ParameterName) {
+    if ([string]::IsNullOrWhiteSpace($CmdletName) -or [string]::IsNullOrWhiteSpace($ParameterName)) { return $false }
+
+    $key = "$CmdletName|$ParameterName"
+    if ($script:HyperVCapabilityCache.ContainsKey($key)) {
+        return [bool]$script:HyperVCapabilityCache[$key]
+    }
+
+    $cmd = Get-Command $CmdletName -EA SilentlyContinue
+    $supported = [bool]($cmd -and $cmd.Parameters.ContainsKey($ParameterName))
+    $script:HyperVCapabilityCache[$key] = $supported
+    return $supported
+}
+
+function GetCompatManagementInstances($ClassName, $Filter=$null) {
+    if ([string]::IsNullOrWhiteSpace($ClassName)) { return @() }
+
+    if ($null -eq $script:HasGetCimInstance) {
+        $script:HasGetCimInstance = [bool](Get-Command Get-CimInstance -EA SilentlyContinue)
+    }
+
+    if ($script:HasGetCimInstance) {
+        try {
+            if ($Filter) { return @(Get-CimInstance -ClassName $ClassName -Filter $Filter -EA Stop) }
+            return @(Get-CimInstance -ClassName $ClassName -EA Stop)
+        } catch {}
+    }
+
+    try {
+        if ($Filter) { return @(Get-WmiObject -Class $ClassName -Filter $Filter -EA Stop) }
+        return @(Get-WmiObject -Class $ClassName -EA Stop)
+    } catch {
+        return @()
+    }
+}
+
+function GetGpuCacheEntry($Cache, $Key) {
+    if (!$Cache -or [string]::IsNullOrWhiteSpace($Key)) { return $null }
+    if (!$Cache.ContainsKey($Key)) { return $null }
+
+    $entry = $Cache[$Key]
+    if (!$entry -or !$entry.PSObject.Properties["Expires"] -or !$entry.PSObject.Properties["Value"]) {
+        [void]$Cache.Remove($Key)
+        return $null
+    }
+
+    if ((Get-Date) -gt $entry.Expires) {
+        [void]$Cache.Remove($Key)
+        return $null
+    }
+
+    return $entry.Value
+}
+
+function SetGpuCacheEntry($Cache, $Key, $Value) {
+    if (!$Cache -or [string]::IsNullOrWhiteSpace($Key)) { return }
+    $Cache[$Key] = [PSCustomObject]@{
+        Expires = (Get-Date).AddSeconds($script:GpuLookupCacheTtlSeconds)
+        Value = $Value
+    }
+}
+
 function ResolvePartitionableDevice($Path) {
     $ids = GetPciIdsFromPath $Path
     if (!$ids) { return $null }
 
     $ven = $ids.VEN
     $dev = $ids.DEV
+    $cacheKey = "VEN_$ven&DEV_$dev"
 
-    $video = Get-WmiObject Win32_VideoController -EA SilentlyContinue |
-        Where-Object { $_.PNPDeviceID -like "*VEN_$ven*DEV_$dev*" } |
-        Select-Object -First 1
+    $cached = GetGpuCacheEntry $script:GpuResolveCache $cacheKey
+    if ($null -ne $cached) { return $cached }
+
+    $videoFilter = "PNPDeviceID LIKE '%VEN_$ven%DEV_$dev%'"
+    $video = GetCompatManagementInstances "Win32_VideoController" $videoFilter | Select-Object -First 1
     if ($video) {
-        return [PSCustomObject]@{
+        $result = [PSCustomObject]@{
             Name = $video.Name
             Class = "Display"
             Vendor = if ($video.AdapterCompatibility) { $video.AdapterCompatibility } else { $null }
@@ -66,26 +142,33 @@ function ResolvePartitionableDevice($Path) {
             VEN = $ven
             DEV = $dev
         }
+        SetGpuCacheEntry $script:GpuResolveCache $cacheKey $result
+        return $result
     }
 
-    $pnp = Get-WmiObject Win32_PnPEntity -EA SilentlyContinue |
-        Where-Object { $_.PNPDeviceID -like "*VEN_$ven*DEV_$dev*" } |
-        Select-Object -First 1
+    $pnpFilter = "PNPDeviceID LIKE '%VEN_$ven%DEV_$dev%'"
+    $pnp = GetCompatManagementInstances "Win32_PnPEntity" $pnpFilter | Select-Object -First 1
     if ($pnp) {
-        $signed = Get-WmiObject Win32_PnPSignedDriver -EA SilentlyContinue |
-            Where-Object { $_.DeviceID -eq $pnp.PNPDeviceID } |
-            Select-Object -First 1
-        return [PSCustomObject]@{
+        $signed = $null
+        if (!$pnp.Name -or !$pnp.PNPClass -or !$pnp.Manufacturer) {
+            $escapedPnpDeviceId = "$($pnp.PNPDeviceID)".Replace('\\', '\\\\').Replace("'", "''")
+            $signedFilter = "DeviceID='$escapedPnpDeviceId'"
+            $signed = GetCompatManagementInstances "Win32_PnPSignedDriver" $signedFilter | Select-Object -First 1
+        }
+
+        $result = [PSCustomObject]@{
             Name = if ($pnp.Name) { $pnp.Name } elseif ($signed.DeviceName) { $signed.DeviceName } else { $null }
             Class = if ($signed.DeviceClass) { $signed.DeviceClass } elseif ($pnp.PNPClass) { $pnp.PNPClass } else { "Unknown" }
-            Vendor = if ($signed.DriverProviderName) { $signed.DriverProviderName } else { $null }
+            Vendor = if ($signed.DriverProviderName) { $signed.DriverProviderName } elseif ($pnp.Manufacturer) { $pnp.Manufacturer } else { $null }
             DeviceId = $pnp.PNPDeviceID
             VEN = $ven
             DEV = $dev
         }
+        SetGpuCacheEntry $script:GpuResolveCache $cacheKey $result
+        return $result
     }
 
-    return [PSCustomObject]@{
+    $result = [PSCustomObject]@{
         Name = $null
         Class = "Unknown"
         Vendor = $null
@@ -93,6 +176,9 @@ function ResolvePartitionableDevice($Path) {
         VEN = $ven
         DEV = $dev
     }
+
+    SetGpuCacheEntry $script:GpuResolveCache $cacheKey $result
+    return $result
 }
 
 function GPUName($Path) {
@@ -107,12 +193,8 @@ function GetGpuDisplayEntries($Adapters) {
 
     $entries = @()
     foreach ($a in $ga) {
-        $name = GPUName $a.InstancePath
-        if (!$name) {
-            $meta = ResolvePartitionableDevice $a.InstancePath
-            if ($meta -and $meta.Name) { $name = $meta.Name }
-            elseif ($meta -and $meta.VEN -and $meta.DEV) { $name = "VEN_$($meta.VEN)/DEV_$($meta.DEV)" }
-        }
+        $meta = ResolvePartitionableDevice $a.InstancePath
+        $name = if ($meta -and $meta.Name) { $meta.Name } elseif ($meta -and $meta.VEN -and $meta.DEV) { "VEN_$($meta.VEN)/DEV_$($meta.DEV)" } else { $null }
         if (!$name) { $name = "GPU" }
 
         $pct = "?"
@@ -143,25 +225,35 @@ function FindGPU($Path, $PreferredClass=$null) {
     $ids = GetPciIdsFromPath $Path
     if (!$ids) { return $null }
 
-    $driverCandidates = @(
-        Get-WmiObject Win32_PnPSignedDriver -EA SilentlyContinue |
-            Where-Object { $_.DeviceID -like "*VEN_$($ids.VEN)*DEV_$($ids.DEV)*" }
-    )
+    $cacheKey = "VEN_$($ids.VEN)&DEV_$($ids.DEV)|$($PreferredClass)"
+    $cached = GetGpuCacheEntry $script:GpuDriverCache $cacheKey
+    if ($null -ne $cached) { return $cached }
+
+    $driverFilter = "DeviceID LIKE '%VEN_$($ids.VEN)%DEV_$($ids.DEV)%'"
+    $driverCandidates = @(GetCompatManagementInstances "Win32_PnPSignedDriver" $driverFilter)
     if (!$driverCandidates) { return $null }
 
     if ($PreferredClass) {
         $preferred = $driverCandidates |
             Where-Object { $_.DeviceClass -and $_.DeviceClass.Equals("$PreferredClass", [System.StringComparison]::OrdinalIgnoreCase) } |
             Select-Object -First 1
-        if ($preferred) { return $preferred }
+        if ($preferred) {
+            SetGpuCacheEntry $script:GpuDriverCache $cacheKey $preferred
+            return $preferred
+        }
     }
 
     $display = $driverCandidates |
         Where-Object { $_.DeviceClass -and $_.DeviceClass.Equals("Display", [System.StringComparison]::OrdinalIgnoreCase) } |
         Select-Object -First 1
-    if ($display) { return $display }
+    if ($display) {
+        SetGpuCacheEntry $script:GpuDriverCache $cacheKey $display
+        return $display
+    }
 
-    return ($driverCandidates | Select-Object -First 1)
+    $fallback = ($driverCandidates | Select-Object -First 1)
+    if ($fallback) { SetGpuCacheEntry $script:GpuDriverCache $cacheKey $fallback }
+    return $fallback
 }
 
 function SelectGPU($Title="SELECT GPU", [switch]$Partition) {
@@ -172,7 +264,10 @@ function SelectGPU($Title="SELECT GPU", [switch]$Partition) {
         foreach ($g in $gpus) {
             $p = GetPartitionablePath $g
             $meta = ResolvePartitionableDevice $p
-            $driver = if ($meta -and $meta.Class) { FindGPU $p $meta.Class } else { FindGPU $p }
+            $driver = $null
+            if (!$meta -or !$meta.Name -or !$meta.Class) {
+                $driver = if ($meta -and $meta.Class) { FindGPU $p $meta.Class } else { FindGPU $p }
+            }
 
             if ($meta -and $meta.Name) { $n = $meta.Name }
             elseif ($driver -and $driver.DeviceName) { $n = $driver.DeviceName }
@@ -209,7 +304,7 @@ function SelectGPU($Title="SELECT GPU", [switch]$Partition) {
         Write-Host ""
         return $pick
     } else {
-        $list = @(Get-WmiObject Win32_PnPSignedDriver -EA SilentlyContinue | Where-Object { $_.DeviceClass -eq "Display" })
+        $list = @(GetCompatManagementInstances "Win32_PnPSignedDriver" "DeviceClass='Display'")
         if (!$list) { Box $Title; Log "No GPUs found" "ERROR"; return $null }
 
         $items = @($list | ForEach-Object {
@@ -248,20 +343,57 @@ function GetDriverStoreFolderRoot($Path) {
 }
 
 function ResolveInfPathForGpu($GPU) {
-    if ($GPU -and $GPU.PSObject.Properties["InfName"] -and $GPU.InfName) {
-        $direct = Join-Path "$env:windir\INF" $GPU.InfName
-        if (Test-Path $direct) { return $direct }
+    if (!$GPU) { return $null }
+
+    $deviceIdKey = $null
+    if ($GPU.PSObject.Properties["DeviceID"] -and $GPU.DeviceID) {
+        $deviceIdKey = "$($GPU.DeviceID)".ToLowerInvariant()
+        if ($script:GpuInfPathCache.ContainsKey($deviceIdKey)) {
+            return $script:GpuInfPathCache[$deviceIdKey]
+        }
     }
 
-    if (!$GPU -or !$GPU.DeviceID) { return $null }
-    $inf = Get-ChildItem $script:GPUReg -EA SilentlyContinue | ForEach-Object {
-        $p = Get-ItemProperty $_.PSPath -EA SilentlyContinue
-        if ($p.MatchingDeviceId -and ($GPU.DeviceID -like "*$($p.MatchingDeviceId)*" -or $p.MatchingDeviceId -like "*$($GPU.DeviceID)*")) { $p.InfPath }
-    } | Select-Object -First 1
-    if (!$inf) { return $null }
+    if ($GPU -and $GPU.PSObject.Properties["InfName"] -and $GPU.InfName) {
+        $direct = Join-Path "$env:windir\INF" $GPU.InfName
+        if (Test-Path $direct) {
+            if ($deviceIdKey) { $script:GpuInfPathCache[$deviceIdKey] = $direct }
+            return $direct
+        }
+    }
+
+    if (!$GPU.DeviceID) { return $null }
+
+    if (!$script:GpuRegDeviceInfEntriesLoaded) {
+        $entries = @()
+        Get-ChildItem $script:GPUReg -EA SilentlyContinue | ForEach-Object {
+            $p = Get-ItemProperty $_.PSPath -EA SilentlyContinue
+            if ($p.MatchingDeviceId -and $p.InfPath) {
+                $entries += [PSCustomObject]@{
+                    MatchingDeviceId = "$($p.MatchingDeviceId)"
+                    InfPath = "$($p.InfPath)"
+                }
+            }
+        }
+        $script:GpuRegDeviceInfEntries = $entries
+        $script:GpuRegDeviceInfEntriesLoaded = $true
+    }
+
+    $gpuDeviceId = "$($GPU.DeviceID)"
+    $inf = @($script:GpuRegDeviceInfEntries | Where-Object {
+        $_.MatchingDeviceId -and ($gpuDeviceId -like "*$($_.MatchingDeviceId)*" -or $_.MatchingDeviceId -like "*$gpuDeviceId*")
+    } | Select-Object -First 1 -ExpandProperty InfPath)
+    if (!$inf) {
+        if ($deviceIdKey) { $script:GpuInfPathCache[$deviceIdKey] = $null }
+        return $null
+    }
 
     $infPath = Join-Path "$env:windir\INF" $inf
-    if (Test-Path $infPath) { return $infPath }
+    if (Test-Path $infPath) {
+        if ($deviceIdKey) { $script:GpuInfPathCache[$deviceIdKey] = $infPath }
+        return $infPath
+    }
+
+    if ($deviceIdKey) { $script:GpuInfPathCache[$deviceIdKey] = $null }
     return $null
 }
 
@@ -270,10 +402,8 @@ function GetInfReferences($InfPath) {
     $content = Get-Content $InfPath -Raw -EA SilentlyContinue
     if ([string]::IsNullOrWhiteSpace($content)) { return @() }
 
-    $patterns = @('\.sys','\.dll','\.exe','\.cat','\.inf','\.bin','\.vp','\.cpa','\.dat','\.cfg','\.json','\.ini','\.mui','\.pnf')
-    $refs = @($patterns | ForEach-Object {
-        [regex]::Matches($content, "[\w\-\.]+$_", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) | ForEach-Object { $_.Value }
-    } | Sort-Object -Unique)
+    $pattern = '[\w\-\.]+\.(?:sys|dll|exe|cat|inf|bin|vp|cpa|dat|cfg|json|ini|mui|pnf)'
+    $refs = @([regex]::Matches($content, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) | ForEach-Object { $_.Value } | Sort-Object -Unique)
     return $refs
 }
 
@@ -303,7 +433,22 @@ function GetDrivers($GPU) {
     if ($GPU.DeviceID) {
         $modifiedDeviceId = "$($GPU.DeviceID)".Replace("\", "\\")
         $antecedent = "\\$env:COMPUTERNAME\ROOT\cimv2:Win32_PnPSignedDriver.DeviceID=" + '"' + $modifiedDeviceId + '"'
-        $assoc = @(Get-WmiObject Win32_PnPSignedDriverCIMDataFile -EA SilentlyContinue | Where-Object { $_.Antecedent -eq $antecedent })
+        $escapedAntecedent = "$antecedent".Replace("'", "''")
+        $assocFilter = "Antecedent='$escapedAntecedent'"
+
+        if ($null -eq $script:HasGetCimInstance) {
+            $script:HasGetCimInstance = [bool](Get-Command Get-CimInstance -EA SilentlyContinue)
+        }
+
+        try {
+            if ($script:HasGetCimInstance) {
+                $assoc = @(Get-CimInstance -ClassName Win32_PnPSignedDriverCIMDataFile -Filter $assocFilter -EA Stop)
+            } else {
+                $assoc = @(Get-WmiObject -Class Win32_PnPSignedDriverCIMDataFile -Filter $assocFilter -EA Stop)
+            }
+        } catch {
+            $assoc = @(Get-WmiObject Win32_PnPSignedDriverCIMDataFile -EA SilentlyContinue | Where-Object { $_.Antecedent -eq $antecedent })
+        }
     }
 
     foreach ($a in $assoc) {
@@ -320,7 +465,12 @@ function GetDrivers($GPU) {
     $serviceName = $null
     if ($GPU.PSObject.Properties["DriverName"] -and $GPU.DriverName) { $serviceName = "$($GPU.DriverName)" }
     if ($serviceName) {
-        $svc = Get-WmiObject Win32_SystemDriver -EA SilentlyContinue | Where-Object { $_.Name -eq $serviceName } | Select-Object -First 1
+        $escapedServiceName = "$serviceName".Replace("'", "''")
+        $serviceFilter = "Name='$escapedServiceName'"
+        $svc = GetCompatManagementInstances "Win32_SystemDriver" $serviceFilter | Select-Object -First 1
+        if (!$svc) {
+            $svc = GetCompatManagementInstances "Win32_SystemDriver" | Where-Object { $_.Name -eq $serviceName } | Select-Object -First 1
+        }
         if ($svc -and $svc.PathName) {
             $bin = "$($svc.PathName)".Trim()
             $binPath = if ($bin.StartsWith('"')) {
@@ -350,12 +500,38 @@ function GetDrivers($GPU) {
             @{P="C:\Windows\SysWow64"; R=$false},
             @{P="C:\Windows\INF"; R=$false}
         )
+
+        $flatSearchIndex = @{}
         foreach ($r in $refs) {
             $found = $false
             foreach ($sp in $search) {
-                $f = Get-ChildItem -Path $sp.P -Filter $r -Recurse:$sp.R -EA SilentlyContinue | Select-Object -First 1
-                if ($f) {
-                    & $addResolved $f.FullName
+                $matchPath = $null
+
+                if ($sp.R) {
+                    $f = Get-ChildItem -LiteralPath $sp.P -Filter $r -Recurse -EA SilentlyContinue | Select-Object -First 1
+                    if ($f) { $matchPath = $f.FullName }
+                } else {
+                    $indexKey = "$($sp.P)".ToLowerInvariant()
+                    if (!$flatSearchIndex.ContainsKey($indexKey)) {
+                        $index = @{}
+                        if (Test-Path $sp.P) {
+                            Get-ChildItem -LiteralPath $sp.P -File -EA SilentlyContinue | ForEach-Object {
+                                $nameKey = "$($_.Name)".ToLowerInvariant()
+                                if (!$index.ContainsKey($nameKey)) { $index[$nameKey] = $_.FullName }
+                            }
+                        }
+                        $flatSearchIndex[$indexKey] = $index
+                    }
+
+                    $nameLookup = "$r".ToLowerInvariant()
+                    $index = $flatSearchIndex[$indexKey]
+                    if ($index.ContainsKey($nameLookup)) {
+                        $matchPath = $index[$nameLookup]
+                    }
+                }
+
+                if ($matchPath) {
+                    & $addResolved $matchPath
                     $found = $true
                     break
                 }

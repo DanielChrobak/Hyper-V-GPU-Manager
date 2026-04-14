@@ -23,11 +23,11 @@ while ($true) {
     if ($null -eq $ch) { Log "Cancelled" "INFO"; continue }
     Write-Host ""
     switch ($ch) {
-        0 { NewVM | Out-Null; Pause }
-        1 { SetGPU | Out-Null; Pause }
-        2 { RemoveGPU | Out-Null; Pause }
-        3 { InstallDrivers | Out-Null; Pause }
-        4 { DeleteVM | Out-Null; Pause }
+        0 { $createResult = NewVM; if ($null -ne $createResult) { Pause } }
+        1 { $setResult = SetGPU; if ($null -ne $setResult) { Pause } }
+        2 { $removeResult = RemoveGPU; if ($null -ne $removeResult) { Pause } }
+        3 { $installResult = InstallDrivers; if ($null -ne $installResult) { Pause } }
+        4 { $deleteResult = DeleteVM; if ($null -ne $deleteResult) { Pause } }
         5 { ShowVMs }
         6 { ShowGPUs }
         7 { Log "Goodbye!" "INFO"; exit }

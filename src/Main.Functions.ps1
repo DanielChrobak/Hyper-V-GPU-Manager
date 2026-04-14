@@ -28,7 +28,7 @@ function NewVM {
     }
     Box "CREATING VM"; Log "VM: $($cfg.Name) | CPU: $($cfg.CPU) | RAM: $($cfg.RAM)GB | Storage: $($cfg.Storage)GB" "INFO"; Write-Host ""
     $vhd = Join-Path $cfg.Path "$($cfg.Name).vhdx"
-    if (Get-VM $cfg.Name -EA SilentlyContinue) { Log "VM already exists" "ERROR"; return $null }
+    if (Get-VM $cfg.Name -EA SilentlyContinue) { Log "VM already exists" "ERROR"; return $false }
     if ((Test-Path $vhd) -and !(Confirm "VHDX exists. Overwrite?")) { Log "Cancelled" "WARN"; return $null }
     if (Test-Path $vhd) { Remove-Item $vhd -Force }
     $r = Try-Op {
@@ -51,10 +51,16 @@ function NewVM {
         Log "CPU: $($cfg.CPU) | RAM: $($cfg.RAM)GB | Storage: $($cfg.Storage)GB" "SUCCESS"; Write-Host ""
         return $cfg.Name
     } "VM Creation"
-    if ($r.OK) { return $r.R } else { return $null }
+    if ($r.OK) { return $r.R } else { return $false }
 }
 
 function ResolveGuestSystemDestinationPath($DestinationPath) {
+    if (-not $script:DriverStorePrefix) {
+        $script:DriverStorePrefix = '\Windows\System32\DriverStore\FileRepository\'
+        $script:DriverStorePrefixNorm = $script:DriverStorePrefix.ToLowerInvariant()
+        $script:HostDriverStoreRoot = '\Windows\System32\HostDriverStore\FileRepository'
+    }
+
     $relDest = "$DestinationPath"
     if ([string]::IsNullOrWhiteSpace($relDest)) { return $null }
 
@@ -67,22 +73,21 @@ function ResolveGuestSystemDestinationPath($DestinationPath) {
     $normalized = $relDest.ToLowerInvariant()
     if ($normalized -eq '\windows\system32\cmd.exe') { return $null }
 
-    $driverStorePrefix = '\Windows\System32\DriverStore\FileRepository\'
-    if ($normalized.StartsWith($driverStorePrefix.ToLowerInvariant())) {
-        $tail = $relDest.Substring($driverStorePrefix.Length).TrimStart('\')
-        if ($tail) { return "\Windows\System32\HostDriverStore\FileRepository\$tail" }
-        return '\Windows\System32\HostDriverStore\FileRepository'
+    if ($normalized.StartsWith($script:DriverStorePrefixNorm)) {
+        $tail = $relDest.Substring($script:DriverStorePrefix.Length).TrimStart('\\')
+        if ($tail) { return "$($script:HostDriverStoreRoot)\$tail" }
+        return $script:HostDriverStoreRoot
     }
 
     return $relDest
 }
 
 function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null) {
-    if (!$VMName) { $vm = SelectVM "GPU PARTITION VM"; if (!$vm) { return $false }; $VMName = $vm.Name }
-    if (!(Get-VM $VMName -EA SilentlyContinue)) { Log "VM not found" "ERROR"; Write-Host ""; Pause; return $false }
+    if (!$VMName) { $vm = SelectVM "GPU PARTITION VM"; if (!$vm) { return $null }; $VMName = $vm.Name }
+    if (!(Get-VM $VMName -EA SilentlyContinue)) { Log "VM not found" "ERROR"; Write-Host ""; return $false }
     if (!$GPUPath) {
         $g = SelectGPU "SELECT GPU FOR PARTITIONING" -Partition
-        if (!$g) { return $false }
+        if (!$g) { return $null }
         $GPUPath = $g.P
         $GPUName = $g.N
     }
@@ -90,7 +95,7 @@ function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null) {
     $Pct = [Math]::Max(1, [Math]::Min(100, $Pct))
     if (!$GPUName) { $GPUName = (GPUName $GPUPath); if (!$GPUName) { $GPUName = "GPU" } }
     Box "GPU PARTITION"; Log "VM: $VMName | GPU: $GPUName | $Pct%" "INFO"; Write-Host ""
-    if (!(EnsureOff $VMName)) { Write-Host ""; Pause; return $false }
+    if (!(EnsureOff $VMName)) { Write-Host ""; return $false }
     $r = Try-Op {
         Spin "Configuring GPU partition..." 2
         $existing = @(Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue)
@@ -100,8 +105,7 @@ function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null) {
             $target = $existing | Where-Object { (GetGpuIdentityKey $_.InstancePath) -eq $targetKey } | Select-Object -First 1
         }
 
-        $addCmd = Get-Command Add-VMGpuPartitionAdapter -EA Stop
-        $supportsInstancePath = ($GPUPath -and $addCmd.Parameters.ContainsKey("InstancePath"))
+        $supportsInstancePath = ($GPUPath -and (TestHyperVCmdletParameter "Add-VMGpuPartitionAdapter" "InstancePath"))
         if (!$target) {
             if ($supportsInstancePath) {
                 $target = Add-VMGpuPartitionAdapter -VMName $VMName -InstancePath $GPUPath -Passthru -EA Stop
@@ -117,9 +121,9 @@ function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null) {
 
         if (!$target) { throw "Unable to determine target GPU partition adapter." }
 
-        $setCmd = Get-Command Set-VMGpuPartitionAdapter -EA Stop
         $max = [int](($Pct / 100) * 1e9); $opt = $max - 1
-        if ($setCmd.Parameters.ContainsKey("AdapterId") -and $target.AdapterId) {
+        $supportsAdapterId = TestHyperVCmdletParameter "Set-VMGpuPartitionAdapter" "AdapterId"
+        if ($supportsAdapterId -and $target.AdapterId) {
             Set-VMGpuPartitionAdapter -VMName $VMName -AdapterId $target.AdapterId -MinPartitionVRAM 1 -MaxPartitionVRAM $max -OptimalPartitionVRAM $opt -MinPartitionEncode 1 -MaxPartitionEncode $max -OptimalPartitionEncode $opt -MinPartitionDecode 1 -MaxPartitionDecode $max -OptimalPartitionDecode $opt -MinPartitionCompute 1 -MaxPartitionCompute $max -OptimalPartitionCompute $opt -EA Stop
         } else {
             Set-VMGpuPartitionAdapter -VMGpuPartitionAdapter $target -MinPartitionVRAM 1 -MaxPartitionVRAM $max -OptimalPartitionVRAM $opt -MinPartitionEncode 1 -MaxPartitionEncode $max -OptimalPartitionEncode $opt -MinPartitionDecode 1 -MaxPartitionDecode $max -OptimalPartitionDecode $opt -MinPartitionCompute 1 -MaxPartitionCompute $max -OptimalPartitionCompute $opt -EA Stop
@@ -127,15 +131,15 @@ function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null) {
         Set-VM $VMName -GuestControlledCacheTypes $true -LowMemoryMappedIoSpace 1GB -HighMemoryMappedIoSpace 32GB
         Write-Host ""; Box "GPU ALLOCATED: $Pct%" "-"; Write-Host ""; return $true
     } "GPU Config"
-    if (!$r.OK) { Write-Host ""; Pause }
+    if (!$r.OK) { Write-Host "" }
     return $r.OK
 }
 
 function RemoveGPU($VMName=$null) {
-    if (!$VMName) { $vm = SelectVM "REMOVE GPU FROM VM"; if (!$vm) { return $false }; $VMName = $vm.Name }
-    if (!(Get-VM $VMName -EA SilentlyContinue)) { Log "VM not found" "ERROR"; Write-Host ""; Pause; return $false }
+    if (!$VMName) { $vm = SelectVM "REMOVE GPU FROM VM"; if (!$vm) { return $null }; $VMName = $vm.Name }
+    if (!(Get-VM $VMName -EA SilentlyContinue)) { Log "VM not found" "ERROR"; Write-Host ""; return $false }
     $allAdapters = @(Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue)
-    if (!$allAdapters) { Log "No GPU partition found on this VM" "WARN"; Write-Host ""; Pause; return $false }
+    if (!$allAdapters) { Log "No GPU partition found on this VM" "WARN"; Write-Host ""; return $false }
 
     $allEntries = @(GetGpuDisplayEntries -Adapters $allAdapters)
     Box "REMOVE GPU PARTITION"; Log "Target VM: $VMName" "INFO"; Write-Host ""
@@ -148,7 +152,7 @@ function RemoveGPU($VMName=$null) {
     $items += "< Cancel >"
 
     $sel = Menu -Items $items -Title "SELECT GPU PARTITION TO REMOVE"
-    if ($null -eq $sel -or $sel -eq ($items.Count - 1)) { Log "Cancelled" "WARN"; return $false }
+    if ($null -eq $sel -or $sel -eq ($items.Count - 1)) { Log "Cancelled" "WARN"; return $null }
 
     $removeAll = ($allEntries.Count -gt 1 -and $sel -eq ($items.Count - 2))
     if ($removeAll) {
@@ -163,22 +167,29 @@ function RemoveGPU($VMName=$null) {
     Log "Selection: $selectedLabel" "INFO"
     Write-Host ""
 
-    if (!(Confirm "Remove the selected GPU partition assignment(s) from '$VMName'?")) { Log "Cancelled" "WARN"; return $false }
+    if (!(Confirm "Remove the selected GPU partition assignment(s) from '$VMName'?")) { Log "Cancelled" "WARN"; return $null }
     $cleanDrivers = Confirm "Also remove matching injected driver files from the VM disk for the selected GPU partition(s)?"
 
     Write-Host ""; if (!(EnsureOff $VMName)) { return $false }
 
     $gpuList = @()
+    $seenGpuIds = @{}
     foreach ($a in $selectedAdapters) {
         $meta = ResolvePartitionableDevice $a.InstancePath
         $gpu = if ($meta -and $meta.Class) { FindGPU $a.InstancePath $meta.Class } else { FindGPU $a.InstancePath }
-        if ($gpu -and !($gpuList | Where-Object { $_.DeviceID -eq $gpu.DeviceID })) { $gpuList += $gpu }
+        if ($gpu) {
+            $gpuIdKey = if ($gpu.DeviceID) { "$($gpu.DeviceID)".ToLowerInvariant() } else { "" }
+            if (!$seenGpuIds.ContainsKey($gpuIdKey)) {
+                $seenGpuIds[$gpuIdKey] = $true
+                $gpuList += $gpu
+            }
+        }
     }
 
     Spin "Removing selected GPU partition adapter(s)..." 2
     if (!(Try-Op {
-        $removeCmd = Get-Command Remove-VMGpuPartitionAdapter -EA Stop
-        if ($removeCmd.Parameters.ContainsKey("AdapterId")) {
+        $supportsAdapterId = TestHyperVCmdletParameter "Remove-VMGpuPartitionAdapter" "AdapterId"
+        if ($supportsAdapterId) {
             foreach ($a in $selectedAdapters) {
                 if ($a.AdapterId) {
                     Remove-VMGpuPartitionAdapter -VMName $VMName -AdapterId $a.AdapterId -EA Stop | Out-Null
@@ -190,13 +201,13 @@ function RemoveGPU($VMName=$null) {
             $selectedAdapters | Remove-VMGpuPartitionAdapter -EA Stop
         }
         Log "Selected GPU partition adapter(s) removed" "SUCCESS"
-    } "Remove GPU Adapter").OK) { Write-Host ""; Pause; return $false }
+    } "Remove GPU Adapter").OK) { Write-Host ""; return $false }
 
     $remainingAdapters = @(Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue)
     $mmioReset = $false
     if (!$remainingAdapters) {
         Spin "Resetting memory-mapped IO settings..." 1
-        if (!(Try-Op { Set-VM $VMName -GuestControlledCacheTypes $false -LowMemoryMappedIoSpace 0 -HighMemoryMappedIoSpace 0 -EA Stop; Log "Memory-mapped IO settings reset" "SUCCESS" } "Reset MMIO").OK) { Write-Host ""; Pause; return $false }
+        if (!(Try-Op { Set-VM $VMName -GuestControlledCacheTypes $false -LowMemoryMappedIoSpace 0 -HighMemoryMappedIoSpace 0 -EA Stop; Log "Memory-mapped IO settings reset" "SUCCESS" } "Reset MMIO").OK) { Write-Host ""; return $false }
         $mmioReset = $true
     } else {
         Log "Other GPU partitions remain assigned; MMIO settings left unchanged" "INFO"
@@ -276,6 +287,7 @@ function RemoveGPU($VMName=$null) {
             if (!$usedManifest) {
                 $folderMap = @{}
                 $fileMap = @{}
+                $destResolveCache = @{}
                 foreach ($gpu in $gpuList) {
                     $drv = GetDrivers $gpu
                     if ($drv) {
@@ -287,7 +299,12 @@ function RemoveGPU($VMName=$null) {
                             }
                         }
                         foreach ($f in $drv.Files) {
-                            $mappedDest = ResolveGuestSystemDestinationPath "$($f.D)"
+                            $rawDest = "$($f.D)"
+                            if ($destResolveCache.ContainsKey($rawDest)) { $mappedDest = $destResolveCache[$rawDest] }
+                            else {
+                                $mappedDest = ResolveGuestSystemDestinationPath $rawDest
+                                $destResolveCache[$rawDest] = $mappedDest
+                            }
                             if (!$mappedDest) { continue }
                             $k = "$mappedDest".ToLowerInvariant()
                             if (!$fileMap.ContainsKey($k)) {
@@ -311,8 +328,8 @@ function RemoveGPU($VMName=$null) {
                 $allFiles = @($fileMap.Values)
                 if ($allFiles) {
                     foreach ($f in $allFiles) {
-                        $relDest = ResolveGuestSystemDestinationPath "$($f.D)"
-                        if (!$relDest) { continue }
+                        $relDest = "$($f.D)"
+                        if ([string]::IsNullOrWhiteSpace($relDest)) { continue }
                         $fp = "$($mount.Path)$relDest"
                         if (Test-Path $fp) {
                             Remove-Item $fp -Force -EA SilentlyContinue
@@ -349,12 +366,12 @@ function RemoveGPU($VMName=$null) {
 }
 
 function InstallDrivers($VMName=$null) {
-    if (!$VMName) { $vm = SelectVM "SELECT VM FOR DRIVERS"; if (!$vm) { return $false }; $VMName = $vm.Name }
+    if (!$VMName) { $vm = SelectVM "SELECT VM FOR DRIVERS"; if (!$vm) { return $null }; $VMName = $vm.Name }
     $ga = @(Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue)
     if (!$ga) {
         Box "GPU DRIVER INJECTION" "-"; Log "No GPU partition assigned to VM: $VMName" "ERROR"; Write-Host ""
         Write-Host "  You must assign a GPU partition before installing drivers." -ForegroundColor Yellow
-        Write-Host "  Use the 'GPU Partition' menu option first." -ForegroundColor Cyan; Write-Host ""; Pause; return $false
+        Write-Host "  Use the 'GPU Partition' menu option first." -ForegroundColor Cyan; Write-Host ""; return $false
     }
 
     $entries = @(GetGpuDisplayEntries -Adapters $ga)
@@ -363,49 +380,61 @@ function InstallDrivers($VMName=$null) {
         $label = if ($entries.Count -gt $i -and $entries[$i].Label) { $entries[$i].Label } else { "GPU" }
         $adapterRows += [PSCustomObject]@{
             Adapter = $ga[$i]
-            Label = ("GPU{0}: {1}" -f ($i + 1).ToString("00"), $label)
+            MenuLabel = ("GPU{0}: {1}" -f ($i + 1).ToString("00"), $label)
+            EntryLabel = $label
         }
     }
 
+    $selectedRows = @()
     $selectedAdapters = @()
     if ($adapterRows.Count -gt 1) {
-        $items = @($adapterRows | ForEach-Object { $_.Label }) + "All assigned GPU partitions" + "< Cancel >"
+        $items = @($adapterRows | ForEach-Object { $_.MenuLabel }) + "All assigned GPU partitions" + "< Cancel >"
         $sel = Menu -Items $items -Title "SELECT GPU DRIVER TARGET"
-        if ($null -eq $sel -or $sel -eq ($items.Count - 1)) { Log "Cancelled" "WARN"; return $false }
+        if ($null -eq $sel -or $sel -eq ($items.Count - 1)) { Log "Cancelled" "WARN"; return $null }
         if ($sel -eq ($items.Count - 2)) {
-            $selectedAdapters = @($adapterRows | ForEach-Object { $_.Adapter })
+            $selectedRows = @($adapterRows)
         } else {
-            $selectedAdapters = @($adapterRows[$sel].Adapter)
+            $selectedRows = @($adapterRows[$sel])
         }
     } else {
-        $selectedAdapters = @($ga[0])
+        $selectedRows = @($adapterRows[0])
     }
 
-    $selectedLabels = @((GetGpuDisplayEntries -Adapters $selectedAdapters) | ForEach-Object { $_.Label } | Select-Object -Unique)
+    $selectedAdapters = @($selectedRows | ForEach-Object { $_.Adapter })
+
+    $selectedLabels = @($selectedRows | ForEach-Object { $_.EntryLabel } | Select-Object -Unique)
     Box "GPU DRIVER INJECTION"; Log "Target VM: $VMName" "INFO"; Log "Selected GPU(s): $($selectedLabels -join ', ')" "SUCCESS"; Write-Host ""
 
     $gpuList = @()
+    $seenGpuIds = @{}
     foreach ($a in $selectedAdapters) {
         $meta = ResolvePartitionableDevice $a.InstancePath
         $gpu = if ($meta -and $meta.Class) { FindGPU $a.InstancePath $meta.Class } else { FindGPU $a.InstancePath }
-        if ($gpu -and !($gpuList | Where-Object { $_.DeviceID -eq $gpu.DeviceID })) { $gpuList += $gpu }
+        if ($gpu) {
+            $gpuIdKey = if ($gpu.DeviceID) { "$($gpu.DeviceID)".ToLowerInvariant() } else { "" }
+            if (!$seenGpuIds.ContainsKey($gpuIdKey)) {
+                $seenGpuIds[$gpuIdKey] = $true
+                $gpuList += $gpu
+            }
+        }
     }
     if (!$gpuList) {
         Log "Could not find matching device driver(s) for the selected partition(s)" "ERROR"
         Write-Host "  Note: Ensure the selected partitionable device has an installed host driver package." -ForegroundColor Yellow
-        Write-Host ""; Pause; return $false
+        Write-Host ""; return $false
     }
 
     $skipExisting = Confirm "Skip unchanged files that already exist in the VM disk? (uses hash comparison)"
 
     $vhd = (Get-VMHardDiskDrive $VMName -EA SilentlyContinue).Path
-    if (!$vhd) { Log "No VHD found" "ERROR"; Write-Host ""; Pause; return $false }
+    if (!$vhd) { Log "No VHD found" "ERROR"; Write-Host ""; return $false }
     if (!(EnsureOff $VMName)) { return $false }
     $mount = $null
     try {
         $folderMap = @{}
         $fileMap = @{}
         $gpuDriverMap = @{}
+        $destResolveCache = @{}
         foreach ($gpu in $gpuList) {
             $drv = GetDrivers $gpu
             if ($drv) {
@@ -415,7 +444,12 @@ function InstallDrivers($VMName=$null) {
                     if (!$folderMap.ContainsKey($k)) { $folderMap[$k] = $folder }
                 }
                 foreach ($f in $drv.Files) {
-                    $mappedDest = ResolveGuestSystemDestinationPath "$($f.D)"
+                    $rawDest = "$($f.D)"
+                    if ($destResolveCache.ContainsKey($rawDest)) { $mappedDest = $destResolveCache[$rawDest] }
+                    else {
+                        $mappedDest = ResolveGuestSystemDestinationPath $rawDest
+                        $destResolveCache[$rawDest] = $mappedDest
+                    }
                     if (!$mappedDest) { continue }
                     $k = "$mappedDest".ToLowerInvariant()
                     if (!$fileMap.ContainsKey($k)) {
@@ -429,7 +463,7 @@ function InstallDrivers($VMName=$null) {
         }
 
         $drv = @{Folders=@($folderMap.Values); Files=@($fileMap.Values)}
-        if ((!$drv.Folders) -and (!$drv.Files)) { Log "No driver files were resolved for the selected partition device(s)" "ERROR"; Write-Host ""; Pause; return $false }
+        if ((!$drv.Folders) -and (!$drv.Files)) { Log "No driver files were resolved for the selected partition device(s)" "ERROR"; Write-Host ""; return $false }
 
         $mount = MountVHD $vhd
         Spin "Preparing destination..." 1
@@ -449,10 +483,16 @@ function InstallDrivers($VMName=$null) {
                 $folderCopied = 0
                 $folderSkipped = 0
                 $srcFiles = @(Get-ChildItem $f -Recurse -File -EA SilentlyContinue)
+                $preparedFolderDirs = @{ "$($d.ToLowerInvariant())" = $true }
                 foreach ($sf in $srcFiles) {
                     $rel = $sf.FullName.Substring($f.Length).TrimStart('\\')
                     $dstFile = Join-Path $d $rel
-                    EnsureDir (Split-Path -Parent $dstFile)
+                    $dstParent = Split-Path -Parent $dstFile
+                    $dstParentKey = "$dstParent".ToLowerInvariant()
+                    if (!$preparedFolderDirs.ContainsKey($dstParentKey)) {
+                        EnsureDir $dstParent
+                        $preparedFolderDirs[$dstParentKey] = $true
+                    }
                     if ((Test-Path $dstFile) -and (TestFileContentEqual $sf.FullName $dstFile)) { $folderSkipped++; $skippedFiles++; continue }
                     Copy-Item $sf.FullName $dstFile -Force -EA Stop
                     $folderCopied++; $copiedFiles++
@@ -473,13 +513,18 @@ function InstallDrivers($VMName=$null) {
         }
 
         Write-Host ""; Log "Copying $($drv.Files.Count) system files..." "INFO"
+        $preparedSystemDirs = @{}
         foreach ($f in $drv.Files) {
-            $relDest = ResolveGuestSystemDestinationPath "$($f.D)"
-            if (!$relDest) { continue }
+            $relDest = "$($f.D)"
+            if ([string]::IsNullOrWhiteSpace($relDest)) { continue }
             $dst = "$($mount.Path)$relDest"
             $dstParent = Split-Path -Parent $dst
-            $mk = Try-Op { New-Item -ItemType Directory -Path $dstParent -Force -EA Stop | Out-Null; return $true } "Prepare path $relDest"
-            if (!$mk.OK) { continue }
+            $dstParentKey = "$dstParent".ToLowerInvariant()
+            if (!$preparedSystemDirs.ContainsKey($dstParentKey)) {
+                $mk = Try-Op { New-Item -ItemType Directory -Path $dstParent -Force -EA Stop | Out-Null; return $true } "Prepare path $relDest"
+                if (!$mk.OK) { continue }
+                $preparedSystemDirs[$dstParentKey] = $true
+            }
             if ($skipExisting -and (Test-Path $dst) -and (TestFileContentEqual $f.S $dst)) { $skippedFiles++; continue }
             $ok = (Try-Op { Copy-Item $f.S $dst -Force -EA Stop; return $true } "Copy $($f.N)").OK
             if ($ok) { $copiedFiles++; Log "+ $($f.N)" "SUCCESS" }
@@ -498,7 +543,15 @@ function InstallDrivers($VMName=$null) {
             $folderDest = @($gpuDrv.Folders | ForEach-Object { "\Windows\System32\HostDriverStore\FileRepository\$(Split-Path -Leaf $_)" } | Sort-Object -Unique)
             $fileDest = @(
                 $gpuDrv.Files |
-                ForEach-Object { ResolveGuestSystemDestinationPath "$($_.D)" } |
+                ForEach-Object {
+                    $rawDest = "$($_.D)"
+                    if ($destResolveCache.ContainsKey($rawDest)) { $destResolveCache[$rawDest] }
+                    else {
+                        $mappedDest = ResolveGuestSystemDestinationPath $rawDest
+                        $destResolveCache[$rawDest] = $mappedDest
+                        $mappedDest
+                    }
+                } |
                 Where-Object { $_ } |
                 Sort-Object -Unique
             )
@@ -530,7 +583,7 @@ function InstallDrivers($VMName=$null) {
             Log "Is Windows installed in this VM?" "ERROR"
             Write-Host "  The VM disk could not be mounted - install Windows first, then run driver injection." -ForegroundColor Yellow
         } else { Log "Failed: $($_.Exception.Message)" "ERROR" }
-        Write-Host ""; Pause; return $false
+        Write-Host ""; return $false
     } finally { if ($mount) { Spin "Unmounting VM disk..." 1; UnmountVHD $mount $vhd } }
 }
 
@@ -538,12 +591,15 @@ function ShowVMs {
     Box "VM OVERVIEW"; Log "Gathering VM information..." "INFO"; Write-Host ""
     $vms = Get-VM
     if (!$vms) { Log "No VMs found" "WARN"; Write-Host ""; Read-Host "  Press Enter"; return }
+
+    $gpuAdapterMap = GetVmGpuAdapterMap $vms
+
     $data = @($vms | ForEach-Object {
         $sz = 0; try { $v = Get-VHD -VMId $_.VMId -EA SilentlyContinue; if ($v) { $sz = [math]::Round($v.Size / 1GB) } } catch {}
         $mem = if ($_.MemoryAssigned -gt 0) { $_.MemoryAssigned } else { $_.MemoryStartup }
         $st = @{Running=@{I="[*]";C="Green"}; Off=@{I="[ ]";C="Gray"}}[$_.State]
         if (!$st) { $st = @{I="[~]";C="Yellow"} }
-        $ga = @(Get-VMGpuPartitionAdapter $_.Name -EA SilentlyContinue)
+        $ga = if ($gpuAdapterMap.ContainsKey($_.Name)) { @($gpuAdapterMap[$_.Name]) } else { @() }
         $gi = if ($ga) { GpuSummary -Adapters $ga } else { "None" }
         [PSCustomObject]@{Icon=$st.I; Name=$_.Name; State=$_.State; CPU=$_.ProcessorCount; RAM=[math]::Round($mem / 1GB); Storage=$sz; GPU=$gi; RC=$st.C}
     })
@@ -553,17 +609,25 @@ function ShowVMs {
 
 function ShowGPUs {
     Box "GPU INFORMATION"; Log "Detecting GPUs..." "INFO"; Write-Host ""
-    $gpus = Get-WmiObject Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -notlike "*Microsoft*" -and $_.Name -notlike "*Remote*" }
+    $gpus = @(GetCompatManagementInstances "Win32_VideoController") | Where-Object { $_.Name -notlike "*Microsoft*" -and $_.Name -notlike "*Remote*" }
     if (!$gpus) { Log "No GPUs found" "WARN"; Write-Host ""; Read-Host "  Press Enter"; return }
     $pg = GetPartitionableGPUs
     $partitionPaths = @($pg | ForEach-Object { GetPartitionablePath $_ })
+
+    $partitionIdentity = @{}
+    foreach ($pp in $partitionPaths) {
+        if ("$pp" -match "VEN_([0-9A-Fa-f]{4}).*DEV_([0-9A-Fa-f]{4})") {
+            $key = "VEN_$($matches[1].ToUpperInvariant())&DEV_$($matches[2].ToUpperInvariant())"
+            $partitionIdentity[$key] = $true
+        }
+    }
+
     $i = 1; $data = @($gpus | ForEach-Object {
         $ok = $_.Status -eq 'OK'; $si = if ($ok) { '[OK]' } else { '[X]' }; $sc = if ($ok) { 'Green' } else { 'Yellow' }
         $ip = $false
         if ($_.PNPDeviceID -match "VEN_([0-9A-Fa-f]{4})&DEV_([0-9A-Fa-f]{4})") {
-            $ven = $matches[1]
-            $dev = $matches[2]
-            $ip = [bool]($partitionPaths | Where-Object { $_ -match "VEN_$ven.*DEV_$dev" } | Select-Object -First 1)
+            $idKey = "VEN_$($matches[1].ToUpperInvariant())&DEV_$($matches[2].ToUpperInvariant())"
+            $ip = $partitionIdentity.ContainsKey($idKey)
         }
         $ps = if ($ip) { "Yes" } else { "No" }; $pc = if ($ip) { "Cyan" } else { "DarkGray" }
         $pn = if ($_.DriverProviderName) { $_.DriverProviderName.Trim() } elseif ($_.AdapterCompatibility) { $_.AdapterCompatibility.Trim() }
@@ -576,9 +640,9 @@ function ShowGPUs {
 }
 
 function DeleteVM($VMName=$null) {
-    if (!$VMName) { $vm = SelectVM "SELECT VM TO DELETE"; if (!$vm) { return $false }; $VMName = $vm.Name }
+    if (!$VMName) { $vm = SelectVM "SELECT VM TO DELETE"; if (!$vm) { return $null }; $VMName = $vm.Name }
     $vm = Get-VM $VMName -EA SilentlyContinue
-    if (!$vm) { Log "VM not found: $VMName" "ERROR"; Write-Host ""; Pause; return $false }
+    if (!$vm) { Log "VM not found: $VMName" "ERROR"; Write-Host ""; return $false }
     Box "DELETE VM: $VMName"; Log "VM: $VMName" "INFO"; Log "State: $($vm.State)" "INFO"
     $vhd = (Get-VMHardDiskDrive $VMName -EA SilentlyContinue).Path
     $dvd = Get-VMDvdDrive $VMName -EA SilentlyContinue
@@ -591,15 +655,15 @@ function DeleteVM($VMName=$null) {
     }
     if ($vhd) { Log "VHD: $vhd" "INFO" }
     Write-Host "`n  WARNING: This will permanently delete the VM!`n" -ForegroundColor Yellow
-    if (!(Confirm "Delete VM '$VMName'?")) { Log "Cancelled" "WARN"; return $false }
+    if (!(Confirm "Delete VM '$VMName'?")) { Log "Cancelled" "WARN"; return $null }
     $delFiles = $false
     if ($vhd -or $autoISO) { Write-Host ""; if (Confirm "Also delete associated files?") { $delFiles = $true } }
     Write-Host ""
-    if ($vm.State -ne "Off") { if (!(EnsureOff $VMName)) { Log "Failed to stop VM" "ERROR"; Write-Host ""; Pause; return $false } }
+    if ($vm.State -ne "Off") { if (!(EnsureOff $VMName)) { Log "Failed to stop VM" "ERROR"; Write-Host ""; return $false } }
     $hasGPU = Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue
-    if ($hasGPU) { Spin "Removing GPU partition..." 1; Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue | Remove-VMGpuPartitionAdapter -EA SilentlyContinue; Log "GPU partition removed" "SUCCESS" }
+    if ($hasGPU) { Spin "Removing GPU partition..." 1; $hasGPU | Remove-VMGpuPartitionAdapter -EA SilentlyContinue; Log "GPU partition removed" "SUCCESS" }
     Spin "Removing VM..." 2
-    if (!(Try-Op { Remove-VM $VMName -Force -EA Stop; Log "VM removed successfully" "SUCCESS" } "Remove VM").OK) { Write-Host ""; Pause; return $false }
+    if (!(Try-Op { Remove-VM $VMName -Force -EA Stop; Log "VM removed successfully" "SUCCESS" } "Remove VM").OK) { Write-Host ""; return $false }
     if ($delFiles) {
         Write-Host ""
         if ($vhd -and (Test-Path $vhd)) { Spin "Deleting VHD..." 2; Try-Op { Remove-Item $vhd -Force -EA Stop; Log "VHD deleted: $vhd" "SUCCESS" } "Delete VHD" | Out-Null }

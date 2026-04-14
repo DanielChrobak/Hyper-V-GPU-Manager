@@ -1,11 +1,33 @@
 ﻿#region VM Helpers
+function GetVmGpuAdapterMap($Vms) {
+    $map = @{}
+    $vmList = @($Vms)
+    if (!$vmList) { return $map }
+
+    $vmNames = @($vmList | ForEach-Object { $_.Name } | Where-Object { $_ })
+    if (!$vmNames) { return $map }
+
+    $allAdapters = @(Get-VMGpuPartitionAdapter -VMName $vmNames -EA SilentlyContinue)
+    foreach ($adapter in $allAdapters) {
+        $vmName = if ($adapter.PSObject.Properties["VMName"] -and $adapter.VMName) { "$($adapter.VMName)" } else { $null }
+        if (!$vmName) { continue }
+        if (!$map.ContainsKey($vmName)) { $map[$vmName] = @() }
+        $map[$vmName] += $adapter
+    }
+
+    return $map
+}
+
 function SelectVM($Title="SELECT VM", $State="Any") {
     Box $Title
     $vms = @(Get-VM | Where-Object { $State -eq "Any" -or $_.State -eq $State })
     if (!$vms) { Log "No $(if ($State -ne 'Any') { "$State " })VMs found" "ERROR"; Write-Host ""; return $null }
+
+    $gpuAdapterMap = GetVmGpuAdapterMap $vms
+
     $items = @($vms | ForEach-Object {
         $mem = if ($_.MemoryAssigned -gt 0) { $_.MemoryAssigned } else { $_.MemoryStartup }
-        $ga = @(Get-VMGpuPartitionAdapter $_.Name -EA SilentlyContinue)
+        $ga = if ($gpuAdapterMap.ContainsKey($_.Name)) { @($gpuAdapterMap[$_.Name]) } else { @() }
         $si = switch ($_.State) { "Running" { "[*]" } "Off" { "[ ]" } default { "[~]" } }
         $sc = switch ($_.State) { "Running" { "[Running]" } "Off" { "[Stopped]" } default { "[$($_.State)]" } }
         $base = "$si $($_.Name.PadRight(20)) $sc CPU:$($_.ProcessorCount) RAM:$([math]::Round($mem / 1GB))GB"
@@ -34,8 +56,8 @@ function SelectVM($Title="SELECT VM", $State="Any") {
     return $vms[$sel]
 }
 
-function StopVM($Name) {
-    $vm = Get-VM $Name -EA SilentlyContinue
+function StopVM($Name, $VmObject=$null) {
+    $vm = if ($VmObject) { $VmObject } else { Get-VM $Name -EA SilentlyContinue }
     if (!$vm -or $vm.State -eq "Off") { return $true }
     Log "VM is running - attempting graceful shutdown..." "WARN"
     return (Try-Op {
@@ -48,6 +70,6 @@ function StopVM($Name) {
 function EnsureOff($Name) {
     $v = Get-VM $Name -EA SilentlyContinue
     if (!$v) { Log "VM not found: $Name" "ERROR"; return $false }
-    return ($v.State -eq "Off") -or (StopVM $Name)
+    return ($v.State -eq "Off") -or (StopVM $Name $v)
 }
 #endregion
