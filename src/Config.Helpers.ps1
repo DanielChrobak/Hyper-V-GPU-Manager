@@ -2,9 +2,9 @@
 $script:Paths = @{VHD="C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"; Mount="C:\ProgramData\HyperV-Mounts"; ISO="C:\ProgramData\HyperV-ISOs"}
 $script:GPUReg = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 $script:Presets = @(
-    @{L="Gaming | 8CPU, 16GB, 256GB"; N="Gaming-VM"; C=8; R=16; S=256},
-    @{L="Development | 4CPU, 8GB, 128GB"; N="Dev-VM"; C=4; R=8; S=128},
-    @{L="ML Training | 12CPU, 32GB, 512GB"; N="ML-VM"; C=12; R=32; S=512}
+    @{L="Gaming | 8vCPU, 16GB, 256GB"; N="Gaming-VM"; C=8; R=16; S=256},
+    @{L="Development | 4vCPU, 8GB, 128GB"; N="Dev-VM"; C=4; R=8; S=128},
+    @{L="ML Training | 12vCPU, 32GB, 512GB"; N="ML-VM"; C=12; R=32; S=512}
 )
 
 $script:UI = @{
@@ -191,6 +191,26 @@ function Input($P, $V={$true}, $D=$null) {
         if (& $V $i) { return $i }
         Log "Invalid input for: $P" "WARN"
     } while ($true)
+}
+
+function FormatCapacityFromGB($ValueGB) {
+    if ($null -eq $ValueGB) { return "0GB" }
+    $gb = [double]$ValueGB
+    if ($gb -lt 0) { $gb = 0 }
+
+    if ($gb -ge 1024) {
+        $tb = $gb / 1024
+        if ([Math]::Abs($tb - [Math]::Round($tb)) -lt 0.01) { return ("{0}TB" -f [int][Math]::Round($tb)) }
+        return ("{0:0.##}TB" -f $tb)
+    }
+
+    if ([Math]::Abs($gb - [Math]::Round($gb)) -lt 0.01) { return ("{0}GB" -f [int][Math]::Round($gb)) }
+    return ("{0:0.##}GB" -f $gb)
+}
+
+function FormatCapacityFromBytes($Bytes) {
+    if ($null -eq $Bytes) { return "0GB" }
+    return (FormatCapacityFromGB ([double]$Bytes / 1GB))
 }
 
 function Table($Data, $Cols) {

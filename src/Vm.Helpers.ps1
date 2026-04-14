@@ -27,10 +27,16 @@ function SelectVM($Title="SELECT VM", $State="Any") {
 
     $items = @($vms | ForEach-Object {
         $mem = if ($_.MemoryAssigned -gt 0) { $_.MemoryAssigned } else { $_.MemoryStartup }
+        $ram = FormatCapacityFromBytes $mem
+        $storage = "0GB"
+        try {
+            $vhd = Get-VHD -VMId $_.VMId -EA SilentlyContinue
+            if ($vhd) { $storage = FormatCapacityFromBytes $vhd.Size }
+        } catch {}
         $ga = if ($gpuAdapterMap.ContainsKey($_.Name)) { @($gpuAdapterMap[$_.Name]) } else { @() }
         $si = switch ($_.State) { "Running" { "[*]" } "Off" { "[ ]" } default { "[~]" } }
         $sc = switch ($_.State) { "Running" { "[Running]" } "Off" { "[Stopped]" } default { "[$($_.State)]" } }
-        $base = "$si $($_.Name.PadRight(20)) $sc CPU:$($_.ProcessorCount) RAM:$([math]::Round($mem / 1GB))GB"
+        $base = "$si $($_.Name.PadRight(20)) $sc vCPU:$($_.ProcessorCount) RAM:$ram Storage:$storage"
 
         if (!$ga) {
             "$base GPU:None"

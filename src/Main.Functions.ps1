@@ -65,7 +65,7 @@ function NewVM {
             }
         } else { $iso = $cfg.ISO }
     }
-    Box "CREATING VM"; Log "VM: $($cfg.Name) | CPU: $($cfg.CPU) | RAM: $($cfg.RAM)GB | Storage: $($cfg.Storage)GB" "INFO"; Write-Host ""
+    Box "CREATING VM"; Log "VM: $($cfg.Name) | vCPU: $($cfg.CPU) | RAM: $(FormatCapacityFromGB $cfg.RAM) | Storage: $(FormatCapacityFromGB $cfg.Storage)" "INFO"; Write-Host ""
     $vhd = Join-Path $cfg.Path "$($cfg.Name).vhdx"
     if (Get-VM $cfg.Name -EA SilentlyContinue) { Log "VM already exists" "ERROR"; return $false }
     if ((Test-Path $vhd) -and !(Confirm "VHDX exists. Overwrite?")) { Log "Cancelled" "WARN"; return $null }
@@ -109,7 +109,7 @@ function NewVM {
             Log "ISO attached" "SUCCESS"
         }
         Write-Host ""; Box "VM CREATED: $($cfg.Name)" "-"
-        Log "CPU: $($cfg.CPU) | RAM: $($cfg.RAM)GB | Storage: $($cfg.Storage)GB" "SUCCESS"; Write-Host ""
+        Log "vCPU: $($cfg.CPU) | RAM: $(FormatCapacityFromGB $cfg.RAM) | Storage: $(FormatCapacityFromGB $cfg.Storage)" "SUCCESS"; Write-Host ""
         return $cfg.Name
     } "VM Creation"
     if ($r.OK) { return $r.R } else { return $false }
@@ -759,15 +759,20 @@ function ShowVMs {
     $gpuAdapterMap = GetVmGpuAdapterMap $vms
 
     $data = @($vms | ForEach-Object {
-        $sz = 0; try { $v = Get-VHD -VMId $_.VMId -EA SilentlyContinue; if ($v) { $sz = [math]::Round($v.Size / 1GB) } } catch {}
+        $storage = "0GB"
+        try {
+            $v = Get-VHD -VMId $_.VMId -EA SilentlyContinue
+            if ($v) { $storage = FormatCapacityFromBytes $v.Size }
+        } catch {}
         $mem = if ($_.MemoryAssigned -gt 0) { $_.MemoryAssigned } else { $_.MemoryStartup }
+        $ram = FormatCapacityFromBytes $mem
         $st = @{Running=@{I="[*]";C="Green"}; Off=@{I="[ ]";C="Gray"}}[$_.State]
         if (!$st) { $st = @{I="[~]";C="Yellow"} }
         $ga = if ($gpuAdapterMap.ContainsKey($_.Name)) { @($gpuAdapterMap[$_.Name]) } else { @() }
         $gi = if ($ga) { GpuSummary -Adapters $ga } else { "None" }
-        [PSCustomObject]@{Icon=$st.I; Name=$_.Name; State=$_.State; CPU=$_.ProcessorCount; RAM=[math]::Round($mem / 1GB); Storage=$sz; GPU=$gi; RC=$st.C}
+        [PSCustomObject]@{Icon=$st.I; Name=$_.Name; State=$_.State; vCPU=$_.ProcessorCount; RAM=$ram; Storage=$storage; GPU=$gi; RC=$st.C}
     })
-    Table $data @(@{H="";P="Icon";C="RC"},@{H="VM Name";P="Name";C="RC"},@{H="State";P="State";C="RC"},@{H="CPU";P="CPU";C="RC"},@{H="RAM(GB)";P="RAM";C="RC"},@{H="Storage";P="Storage";C="RC"},@{H="GPU";P="GPU";C="RC"})
+    Table $data @(@{H="";P="Icon";C="RC"},@{H="VM Name";P="Name";C="RC"},@{H="State";P="State";C="RC"},@{H="vCPU";P="vCPU";C="RC"},@{H="RAM";P="RAM";C="RC"},@{H="Storage";P="Storage";C="RC"},@{H="GPU";P="GPU";C="RC"})
     Write-Host ""; Read-Host "  Press Enter"
 }
 
