@@ -85,6 +85,27 @@ function Try-Op($Code, $Op, $Ok=$null, $OnFail=$null) {
 
 function EnsureDir($P) { if (!(Test-Path $P)) { New-Item $P -ItemType Directory -Force -EA SilentlyContinue | Out-Null } }
 
+function GetFreeBytesForPath($Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $root = [System.IO.Path]::GetPathRoot($fullPath)
+        if ([string]::IsNullOrWhiteSpace($root)) { return $null }
+
+        $driveName = $root.TrimEnd([char]'\').TrimEnd([char]':')
+        if ([string]::IsNullOrWhiteSpace($driveName)) { return $null }
+
+        $drive = Get-PSDrive -Name $driveName -EA SilentlyContinue
+        if ($drive -and $drive.Free -ge 0) { return [int64]$drive.Free }
+
+        if (Get-Command Get-Volume -EA SilentlyContinue) {
+            $vol = Get-Volume -DriveLetter $driveName -EA SilentlyContinue | Select-Object -First 1
+            if ($vol -and $vol.SizeRemaining -ge 0) { return [int64]$vol.SizeRemaining }
+        }
+    } catch {}
+    return $null
+}
+
 function GetDriverManifestFilePath($MountPath) {
     if ([string]::IsNullOrWhiteSpace($MountPath)) { return $null }
     return (Join-Path $MountPath "Windows\System32\HostDriverStore\gpu-driver-manifest.json")
@@ -93,23 +114,48 @@ function GetDriverManifestFilePath($MountPath) {
 function ReadDriverManifest($MountPath) {
     $manifestPath = GetDriverManifestFilePath $MountPath
     if (!$manifestPath -or !(Test-Path $manifestPath)) { return @() }
-    try {
-        $raw = Get-Content $manifestPath -Raw -EA Stop
-        if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
-        $parsed = $raw | ConvertFrom-Json -EA Stop
-        if ($parsed -is [System.Array]) { return @($parsed) }
-        return @($parsed)
-    } catch {
-        Log "Could not parse driver manifest at $manifestPath. A new manifest will be created." "WARN"
-        return @()
+    $backupPath = "$manifestPath.bak"
+
+    foreach ($candidate in @($manifestPath, $backupPath)) {
+        if (!(Test-Path $candidate)) { continue }
+        try {
+            $raw = Get-Content $candidate -Raw -EA Stop
+            if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+            $parsed = $raw | ConvertFrom-Json -EA Stop
+            if ($candidate -ne $manifestPath) {
+                Log "Driver manifest fallback in use: $candidate" "WARN"
+            }
+            if ($parsed -is [System.Array]) { return @($parsed) }
+            return @($parsed)
+        } catch {
+            if ($candidate -eq $manifestPath) {
+                Log "Could not parse driver manifest at $manifestPath. Trying backup copy." "WARN"
+            }
+        }
     }
+
+    Log "Could not parse driver manifest at $manifestPath. A new manifest will be created." "WARN"
+    return @()
 }
 
 function WriteDriverManifest($MountPath, $Entries) {
     $manifestPath = GetDriverManifestFilePath $MountPath
     if (!$manifestPath) { return }
     EnsureDir (Split-Path -Parent $manifestPath)
-    @($Entries) | ConvertTo-Json -Depth 8 | Out-File $manifestPath -Encoding UTF8 -Force
+
+    $tempPath = "$manifestPath.tmp"
+    $backupPath = "$manifestPath.bak"
+    try {
+        if (Test-Path $manifestPath) {
+            Copy-Item -Path $manifestPath -Destination $backupPath -Force -EA SilentlyContinue
+        }
+
+        @($Entries) | ConvertTo-Json -Depth 8 | Out-File $tempPath -Encoding UTF8 -Force
+        Move-Item -Path $tempPath -Destination $manifestPath -Force
+    } catch {
+        if (Test-Path $tempPath) { Remove-Item -Path $tempPath -Force -EA SilentlyContinue }
+        throw
+    }
 }
 
 function TestFileContentEqual($SourcePath, $DestinationPath) {

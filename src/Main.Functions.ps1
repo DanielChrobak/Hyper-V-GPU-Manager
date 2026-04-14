@@ -17,6 +17,16 @@ function NewVM {
             Path = $script:Paths.VHD; ISO = Read-Host "  ISO path (press Enter to skip)"
         }
     }
+
+    if ($cfg.ISO -and !(Test-Path $cfg.ISO)) {
+        Log "ISO path not found: $($cfg.ISO)" "WARN"
+        if (!(Confirm "Continue creating VM without attaching an ISO?")) {
+            Log "Cancelled" "WARN"
+            return $null
+        }
+        $cfg.ISO = $null
+    }
+
     $iso = $null
     if ($cfg.ISO -and (Test-Path $cfg.ISO)) {
         Write-Host ""
@@ -44,7 +54,15 @@ function NewVM {
 
             $iso = NewAutoISO $cfg.ISO $cfg.Name $imageSelection $localAccountConfig
             if ($iso) { Log "Will use automated installation ISO" "SUCCESS"; Write-Host "" }
-            else { Log "Falling back to original ISO" "WARN"; $iso = $cfg.ISO; Write-Host "" }
+            else {
+                Log "Falling back to original ISO" "WARN"
+                if ($script:LastAutoUnattendFallbackPath) {
+                    Log "autounattend.xml exported: $script:LastAutoUnattendFallbackPath" "INFO"
+                    Log "Use this file with your installation media if you still want unattended setup." "INFO"
+                }
+                $iso = $cfg.ISO
+                Write-Host ""
+            }
         } else { $iso = $cfg.ISO }
     }
     Box "CREATING VM"; Log "VM: $($cfg.Name) | CPU: $($cfg.CPU) | RAM: $($cfg.RAM)GB | Storage: $($cfg.Storage)GB" "INFO"; Write-Host ""
@@ -52,6 +70,18 @@ function NewVM {
     if (Get-VM $cfg.Name -EA SilentlyContinue) { Log "VM already exists" "ERROR"; return $false }
     if ((Test-Path $vhd) -and !(Confirm "VHDX exists. Overwrite?")) { Log "Cancelled" "WARN"; return $null }
     if (Test-Path $vhd) { Remove-Item $vhd -Force }
+
+    $requiredBytes = ([int64]$cfg.Storage * 1GB) + 2GB
+    $freeBytes = GetFreeBytesForPath $vhd
+    if ($null -eq $freeBytes) {
+        Log "Could not verify free disk space for VHD target path. Continuing anyway." "WARN"
+    } elseif ($freeBytes -lt $requiredBytes) {
+        $reqGB = [Math]::Ceiling($requiredBytes / 1GB)
+        $freeGB = [Math]::Floor($freeBytes / 1GB)
+        Log "Insufficient free disk space for VHD creation. Required ~${reqGB}GB, available ${freeGB}GB." "ERROR"
+        return $false
+    }
+
     $r = Try-Op {
         Spin "Creating VM..." 2; EnsureDir $cfg.Path
         New-VM -Name $cfg.Name -MemoryStartupBytes ([int64]$cfg.RAM * 1GB) -Generation 2 -NewVHDPath $vhd -NewVHDSizeBytes ([int64]$cfg.Storage * 1GB) | Out-Null
@@ -152,14 +182,53 @@ function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null) {
 
         if (!$target) { throw "Unable to determine target GPU partition adapter." }
 
-        $max = [int](($Pct / 100) * 1e9); $opt = $max - 1
+        $partitionableGpu = GetPartitionableGpuByPath $GPUPath
+        $vramAlloc = GetGpuPartitionResourceAllocation -PartitionableGpu $partitionableGpu -ResourceName "VRAM" -Percent $Pct -Fallback 1000000000
+        $encodeAlloc = GetGpuPartitionResourceAllocation -PartitionableGpu $partitionableGpu -ResourceName "Encode" -Percent $Pct -Fallback 1000000000
+        $decodeAlloc = GetGpuPartitionResourceAllocation -PartitionableGpu $partitionableGpu -ResourceName "Decode" -Percent $Pct -Fallback 1000000000
+        $computeAlloc = GetGpuPartitionResourceAllocation -PartitionableGpu $partitionableGpu -ResourceName "Compute" -Percent $Pct -Fallback 1000000000
+        if ($encodeAlloc.IsUnbounded) {
+            Log "Host reports Encode as unbounded (UInt64::MaxValue). Applying full encode range instead of percentage scaling." "INFO"
+        }
+        $partitionParams = @{
+            MinPartitionVRAM = $vramAlloc.Min
+            MaxPartitionVRAM = $vramAlloc.Max
+            OptimalPartitionVRAM = $vramAlloc.Optimal
+            MinPartitionEncode = $encodeAlloc.Min
+            MaxPartitionEncode = $encodeAlloc.Max
+            OptimalPartitionEncode = $encodeAlloc.Optimal
+            MinPartitionDecode = $decodeAlloc.Min
+            MaxPartitionDecode = $decodeAlloc.Max
+            OptimalPartitionDecode = $decodeAlloc.Optimal
+            MinPartitionCompute = $computeAlloc.Min
+            MaxPartitionCompute = $computeAlloc.Max
+            OptimalPartitionCompute = $computeAlloc.Optimal
+        }
+
         $supportsAdapterId = TestHyperVCmdletParameter "Set-VMGpuPartitionAdapter" "AdapterId"
         if ($supportsAdapterId -and $target.AdapterId) {
-            Set-VMGpuPartitionAdapter -VMName $VMName -AdapterId $target.AdapterId -MinPartitionVRAM 1 -MaxPartitionVRAM $max -OptimalPartitionVRAM $opt -MinPartitionEncode 1 -MaxPartitionEncode $max -OptimalPartitionEncode $opt -MinPartitionDecode 1 -MaxPartitionDecode $max -OptimalPartitionDecode $opt -MinPartitionCompute 1 -MaxPartitionCompute $max -OptimalPartitionCompute $opt -EA Stop
+            Set-VMGpuPartitionAdapter -VMName $VMName -AdapterId $target.AdapterId @partitionParams -EA Stop
         } else {
-            Set-VMGpuPartitionAdapter -VMGpuPartitionAdapter $target -MinPartitionVRAM 1 -MaxPartitionVRAM $max -OptimalPartitionVRAM $opt -MinPartitionEncode 1 -MaxPartitionEncode $max -OptimalPartitionEncode $opt -MinPartitionDecode 1 -MaxPartitionDecode $max -OptimalPartitionDecode $opt -MinPartitionCompute 1 -MaxPartitionCompute $max -OptimalPartitionCompute $opt -EA Stop
+            Set-VMGpuPartitionAdapter -VMGpuPartitionAdapter $target @partitionParams -EA Stop
         }
         Set-VM $VMName -GuestControlledCacheTypes $true -LowMemoryMappedIoSpace 1GB -HighMemoryMappedIoSpace 32GB
+
+        $applied = $null
+        if ($supportsAdapterId -and $target.AdapterId) {
+            $applied = Get-VMGpuPartitionAdapter -VMName $VMName -AdapterId $target.AdapterId -EA SilentlyContinue | Select-Object -First 1
+        }
+        if (!$applied -and $targetKey) {
+            $applied = @(Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue) | Where-Object { (GetGpuIdentityKey $_.InstancePath) -eq $targetKey } | Select-Object -First 1
+        }
+        if (!$applied) {
+            $applied = @(Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue) | Select-Object -First 1
+        }
+        if ($applied -and $vramAlloc.Capacity -gt 0 -and $applied.MaxPartitionVRAM -gt 0) {
+            $effectivePct = [Math]::Round(([decimal]$applied.MaxPartitionVRAM / [decimal]$vramAlloc.Capacity) * 100)
+            $effectivePct = [Math]::Max(1, [Math]::Min(100, [int]$effectivePct))
+            Log "Applied partition VRAM max $($applied.MaxPartitionVRAM) (~$effectivePct% of detected capacity)." "INFO"
+        }
+
         Write-Host ""; Box "GPU ALLOCATED: $Pct%" "-"; Write-Host ""; return $true
     } "GPU Config"
     if (!$r.OK) { Write-Host "" }

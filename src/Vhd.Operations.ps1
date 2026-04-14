@@ -13,19 +13,46 @@ function SecureDir($P) {
 function MountVHD($VHD) {
     SecureDir $script:Paths.Mount
     $mp = Join-Path $script:Paths.Mount ("VMMount_" + [Guid]::NewGuid().ToString("N"))
-    $disk = $null; $part = $null
+    $disk = $null; $part = $null; $attachedPartitionNumber = $null
     try {
         SecureDir $mp; Spin "Mounting virtual disk..." 2
         $disk = Mount-VHD $VHD -NoDriveLetter -PassThru -EA Stop
-        Start-Sleep 2; Update-Disk $disk.DiskNumber -EA SilentlyContinue
-        $part = Get-Partition -DiskNumber $disk.DiskNumber -EA Stop | Where-Object { $_.Size -gt 10GB } | Sort-Object Size -Descending | Select-Object -First 1
-        if (!$part) { throw "No valid partition found" }
+
+        $partitions = @()
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            Update-Disk $disk.DiskNumber -EA SilentlyContinue
+            $partitions = @(Get-Partition -DiskNumber $disk.DiskNumber -EA SilentlyContinue | Sort-Object Size -Descending)
+            if ($partitions.Count -gt 0) { break }
+            Start-Sleep -Milliseconds 500
+        }
+        if ($partitions.Count -eq 0) { throw "No partitions found on mounted disk" }
+
+        $candidates = @($partitions | Where-Object { $_.Size -gt 5GB } | Sort-Object Size -Descending)
+        if ($candidates.Count -eq 0) { $candidates = $partitions }
+
         Spin "Mounting partition..." 1
-        Add-PartitionAccessPath -DiskNumber $disk.DiskNumber -PartitionNumber $part.PartitionNumber -AccessPath $mp
-        if (!(Test-Path "$mp\Windows")) { throw "Windows folder not found - is Windows installed?" }
+        foreach ($candidate in $candidates) {
+            try {
+                Add-PartitionAccessPath -DiskNumber $disk.DiskNumber -PartitionNumber $candidate.PartitionNumber -AccessPath $mp -EA Stop
+                $attachedPartitionNumber = $candidate.PartitionNumber
+                if (Test-Path "$mp\Windows\System32") {
+                    $part = $candidate
+                    break
+                }
+            } catch {}
+
+            if ($attachedPartitionNumber) {
+                Remove-PartitionAccessPath -DiskNumber $disk.DiskNumber -PartitionNumber $attachedPartitionNumber -AccessPath $mp -EA SilentlyContinue
+                $attachedPartitionNumber = $null
+            }
+        }
+
+        if (!$part) { throw "Windows folder not found - is Windows installed?" }
         return @{Disk=$disk; Part=$part; Path=$mp; VHD=$VHD}
     } catch {
-        if ($part -and $disk) { Remove-PartitionAccessPath -DiskNumber $disk.DiskNumber -PartitionNumber $part.PartitionNumber -AccessPath $mp -EA SilentlyContinue }
+        if ($attachedPartitionNumber -and $disk) {
+            Remove-PartitionAccessPath -DiskNumber $disk.DiskNumber -PartitionNumber $attachedPartitionNumber -AccessPath $mp -EA SilentlyContinue
+        }
         if ($disk) { Dismount-VHD $VHD -EA SilentlyContinue }
         if (Test-Path $mp) { Remove-Item $mp -Recurse -Force -EA SilentlyContinue }
         throw

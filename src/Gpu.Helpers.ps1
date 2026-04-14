@@ -50,6 +50,114 @@ function GetGpuIdentityKey($Path) {
     return "$Path".ToUpperInvariant()
 }
 
+function GetPartitionableGpuByPath($Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+
+    $targetKey = GetGpuIdentityKey $Path
+    $all = @(GetPartitionableGPUs)
+    foreach ($gpu in $all) {
+        $gpuPath = GetPartitionablePath $gpu
+        if ([string]::IsNullOrWhiteSpace($gpuPath)) { continue }
+        if ($gpuPath -eq $Path) { return $gpu }
+
+        $gpuKey = GetGpuIdentityKey $gpuPath
+        if ($targetKey -and $gpuKey -and ($gpuKey -eq $targetKey)) {
+            return $gpu
+        }
+    }
+
+    return $null
+}
+
+function GetGpuPartitionResourceCapacity($PartitionableGpu, $ResourceName, [UInt64]$Fallback=1000000000) {
+    if (!$PartitionableGpu -or [string]::IsNullOrWhiteSpace($ResourceName)) {
+        return [UInt64]$Fallback
+    }
+
+    $candidates = @("Total$ResourceName", "MaxPartition$ResourceName", "Available$ResourceName")
+    foreach ($key in $candidates) {
+        if (!$PartitionableGpu.PSObject.Properties[$key]) { continue }
+        try {
+            $value = [UInt64]$PartitionableGpu.$key
+            if ($value -gt 0 -and $value -lt [UInt64]::MaxValue) { return $value }
+        } catch {}
+    }
+
+    return [UInt64]$Fallback
+}
+
+function TestGpuPartitionResourceUnbounded($PartitionableGpu, $ResourceName) {
+    if (!$PartitionableGpu -or [string]::IsNullOrWhiteSpace($ResourceName)) { return $false }
+
+    $candidates = @("Total$ResourceName", "Available$ResourceName", "MaxPartition$ResourceName", "OptimalPartition$ResourceName")
+    $seen = $false
+    $hasFinite = $false
+    $hasUnbounded = $false
+
+    foreach ($key in $candidates) {
+        if (!$PartitionableGpu.PSObject.Properties[$key]) { continue }
+        try {
+            $value = [UInt64]$PartitionableGpu.$key
+            $seen = $true
+            if ($value -eq [UInt64]::MaxValue) {
+                $hasUnbounded = $true
+                continue
+            }
+            if ($value -gt 0) { $hasFinite = $true }
+        } catch {}
+    }
+
+    return ($seen -and $hasUnbounded -and !$hasFinite)
+}
+
+function GetGpuPartitionResourceAllocation($PartitionableGpu, $ResourceName, $Percent, [UInt64]$Fallback=1000000000) {
+    if (TestGpuPartitionResourceUnbounded -PartitionableGpu $PartitionableGpu -ResourceName $ResourceName) {
+        return [PSCustomObject]@{
+            Min = [UInt64]0
+            Max = [UInt64]::MaxValue
+            Optimal = [UInt64]::MaxValue
+            Capacity = [UInt64]::MaxValue
+            IsUnbounded = $true
+        }
+    }
+
+    $pct = [Math]::Max(1, [Math]::Min(100, [int]$Percent))
+    $capacity = GetGpuPartitionResourceCapacity -PartitionableGpu $PartitionableGpu -ResourceName $ResourceName -Fallback $Fallback
+    $desired = [UInt64]([Math]::Max([decimal]1, [Math]::Floor(([decimal]$capacity * [decimal]$pct) / 100)))
+
+    $minKey = "MinPartition$ResourceName"
+    $maxKey = "MaxPartition$ResourceName"
+    $minBound = [UInt64]0
+    $maxBound = [UInt64]0
+
+    if ($PartitionableGpu -and $PartitionableGpu.PSObject.Properties[$minKey]) {
+        try {
+            $value = [UInt64]$PartitionableGpu.$minKey
+            if ($value -gt 0 -and $value -lt [UInt64]::MaxValue) { $minBound = $value }
+        } catch {}
+    }
+    if ($PartitionableGpu -and $PartitionableGpu.PSObject.Properties[$maxKey]) {
+        try {
+            $value = [UInt64]$PartitionableGpu.$maxKey
+            if ($value -gt 0 -and $value -lt [UInt64]::MaxValue) { $maxBound = $value }
+        } catch {}
+    }
+
+    if ($maxBound -gt 0 -and $desired -gt $maxBound) { $desired = $maxBound }
+    if ($minBound -gt 0 -and $desired -lt $minBound) { $desired = $minBound }
+
+    $minValue = if ($minBound -gt 0) { $minBound } else { [UInt64]1 }
+    if ($minValue -gt $desired) { $minValue = $desired }
+
+    return [PSCustomObject]@{
+        Min = $minValue
+        Max = $desired
+        Optimal = $desired
+        Capacity = $capacity
+        IsUnbounded = $false
+    }
+}
+
 if (-not $script:GpuResolveCache) { $script:GpuResolveCache = @{} }
 if (-not $script:GpuDriverCache) { $script:GpuDriverCache = @{} }
 if (-not $script:GpuLookupCacheTtlSeconds) { $script:GpuLookupCacheTtlSeconds = 300 }
@@ -199,7 +307,19 @@ function GetGpuDisplayEntries($Adapters) {
 
         $pct = "?"
         try {
-            if ($a.MaxPartitionVRAM -gt 0) { $pct = "$([math]::Round(($a.MaxPartitionVRAM / 1e9) * 100))%" }
+            if ($a.MaxPartitionVRAM -gt 0) {
+                $capacity = [UInt64]1000000000
+                $partitionable = GetPartitionableGpuByPath $a.InstancePath
+                if ($partitionable) {
+                    $capacity = GetGpuPartitionResourceCapacity -PartitionableGpu $partitionable -ResourceName "VRAM" -Fallback 1000000000
+                }
+
+                if ($capacity -gt 0) {
+                    $pctValue = [Math]::Round(([decimal]$a.MaxPartitionVRAM / [decimal]$capacity) * 100)
+                    $pctValue = [Math]::Max(1, [Math]::Min(100, [int]$pctValue))
+                    $pct = "$pctValue%"
+                }
+            }
         } catch {}
 
         $entries += [PSCustomObject]@{

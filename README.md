@@ -129,6 +129,7 @@ Allocates GPU resources to a virtual machine.
 
 **Notes:**
 - Allocation percentage applies to all resource types equally
+- Some hosts report Encode capacity as `UInt64::MaxValue` (`18446744073709551615`). The script treats this as unbounded and applies full encode range instead of percentage-scaling a synthetic fallback.
 - Removing GPU partition also cleans up MMIO settings
 - Running GPU Partition again for the same GPU updates that adapter's percentage
 - Running GPU Partition for a different GPU adds another adapter with its own percentage (when `-InstancePath` is supported on the host)
@@ -509,8 +510,7 @@ When selecting VMs, the interface displays:
 - **Descriptive error messages** with suggested actions
 - **Graceful handling** of missing Windows installations
 - **Partial success reporting** when some operations succeed
-- **Timeout handling** for VM shutdown (60 seconds)
-- **Forced shutdown fallback** if graceful shutdown times out
+- **Timeout handling** for VM shutdown (graceful attempt, then forced power-off fallback)
 
 ### Security Features
 - **Administrator elevation:** Auto-prompts if not running as admin

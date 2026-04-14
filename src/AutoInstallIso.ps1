@@ -106,12 +106,14 @@ $script:AutoXMLTemplate = @'
                 <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
                 <ProtectYourPC>3</ProtectYourPC>
             </OOBE>
-            <TimeZone>UTC</TimeZone>
+            <TimeZone>__TIME_ZONE__</TimeZone>
             __LOCAL_ACCOUNT_SETUP__
         </component>
     </settings>
 </unattend>
 '@
+
+if (-not $script:LastAutoUnattendFallbackPath) { $script:LastAutoUnattendFallbackPath = $null }
 
 function XmlEsc($Value) {
     if ($null -eq $Value) { return "" }
@@ -121,6 +123,7 @@ function XmlEsc($Value) {
 function GetHostLocaleSettings {
     $fallback = "en-US"
     $inputLocale = $fallback; $systemLocale = $fallback; $uiLanguage = $fallback; $userLocale = $fallback
+    $timeZone = "UTC"
 
     try { $systemLocale = (Get-WinSystemLocale).Name } catch {}
     try { $userLocale = (Get-Culture).Name } catch {}
@@ -144,16 +147,25 @@ function GetHostLocaleSettings {
         }
     } catch {}
 
+    try {
+        $tz = Get-TimeZone
+        if ($tz -and ![string]::IsNullOrWhiteSpace($tz.Id)) {
+            $timeZone = $tz.Id
+        }
+    } catch {}
+
     if ([string]::IsNullOrWhiteSpace($systemLocale)) { $systemLocale = $fallback }
     if ([string]::IsNullOrWhiteSpace($userLocale)) { $userLocale = $systemLocale }
     if ([string]::IsNullOrWhiteSpace($uiLanguage)) { $uiLanguage = $systemLocale }
     if ([string]::IsNullOrWhiteSpace($inputLocale)) { $inputLocale = $userLocale }
+    if ([string]::IsNullOrWhiteSpace($timeZone)) { $timeZone = "UTC" }
 
     return [PSCustomObject]@{
         InputLocale  = $inputLocale
         SystemLocale = $systemLocale
         UILanguage   = $uiLanguage
         UserLocale   = $userLocale
+        TimeZone     = $timeZone
     }
 }
 
@@ -306,6 +318,15 @@ function BuildAutoUnattendXml($LocaleSettings, $ImageSelection=$null, $LocalAcco
             SystemLocale = "en-US"
             UILanguage   = "en-US"
             UserLocale   = "en-US"
+            TimeZone     = "UTC"
+        }
+    }
+
+    $timeZone = "UTC"
+    if ($LocaleSettings.PSObject.Properties.Name -contains "TimeZone") {
+        $candidateTimeZone = "$($LocaleSettings.TimeZone)".Trim()
+        if (![string]::IsNullOrWhiteSpace($candidateTimeZone)) {
+            $timeZone = $candidateTimeZone
         }
     }
 
@@ -315,12 +336,14 @@ function BuildAutoUnattendXml($LocaleSettings, $ImageSelection=$null, $LocalAcco
     $xml = $xml.Replace("__SYSTEM_LOCALE__", (XmlEsc $LocaleSettings.SystemLocale))
     $xml = $xml.Replace("__UI_LANGUAGE__", (XmlEsc $LocaleSettings.UILanguage))
     $xml = $xml.Replace("__USER_LOCALE__", (XmlEsc $LocaleSettings.UserLocale))
+    $xml = $xml.Replace("__TIME_ZONE__", (XmlEsc $timeZone))
     $xml = $xml.Replace("__LOCAL_ACCOUNT_SETUP__", (BuildLocalAccountXml $LocalAccount))
     return $xml
 }
 
 function NewAutoISO($Src, $VM, $ImageSelection=$null, $LocalAccount=$null) {
     Box "AUTOMATED INSTALLATION SETUP" "-"; Log "Creating automated installation ISO..." "INFO"; Write-Host ""
+    $script:LastAutoUnattendFallbackPath = $null
     $mount = $null; $work = $null
     try {
         EnsureDir $script:Paths.ISO
@@ -339,7 +362,7 @@ function NewAutoISO($Src, $VM, $ImageSelection=$null, $LocalAccount=$null) {
         Log "ISO contents copied successfully" "SUCCESS"; Write-Host ""
         Spin "Creating autounattend.xml..." 1
         $locale = GetHostLocaleSettings
-        Log ("Using host locale settings: UI={0}, System={1}, User={2}, Keyboard={3}" -f $locale.UILanguage, $locale.SystemLocale, $locale.UserLocale, $locale.InputLocale) "INFO"
+        Log ("Using host locale settings: UI={0}, System={1}, User={2}, Keyboard={3}, TimeZone={4}" -f $locale.UILanguage, $locale.SystemLocale, $locale.UserLocale, $locale.InputLocale, $locale.TimeZone) "INFO"
         if ($ImageSelection -and $ImageSelection.Index) {
             Log ("Using selected installation image index: {0}" -f $ImageSelection.Index) "INFO"
         }
@@ -362,6 +385,7 @@ function NewAutoISO($Src, $VM, $ImageSelection=$null, $LocalAccount=$null) {
             Write-Host "  Alternatively, manually copy autounattend.xml to installation media." -ForegroundColor Cyan; Write-Host ""
             $desktop = Join-Path ([Environment]::GetFolderPath("Desktop")) "autounattend.xml"
             Copy-Item "$work\autounattend.xml" $desktop -Force
+            $script:LastAutoUnattendFallbackPath = $desktop
             Log "autounattend.xml saved to Desktop" "SUCCESS"
             return $null
         }
@@ -376,7 +400,10 @@ function NewAutoISO($Src, $VM, $ImageSelection=$null, $LocalAccount=$null) {
         Write-Host ""; Box "AUTOMATED ISO CREATED" "-"
         Log "ISO Path: $new" "SUCCESS"; Log "Size: $([math]::Round((Get-Item $new).Length / 1GB, 2)) GB" "SUCCESS"
         return $new
-    } catch { Log "Failed to create automated ISO: $_" "ERROR"; Write-Host ""; return $null }
+    } catch {
+        $script:LastAutoUnattendFallbackPath = $null
+        Log "Failed to create automated ISO: $_" "ERROR"; Write-Host ""; return $null
+    }
     finally {
         if ($mount) { Dismount-DiskImage -ImagePath $Src -EA SilentlyContinue | Out-Null }
         if ($work) { Spin "Cleaning up temporary files..." 2; Remove-Item $work -Recurse -Force -EA SilentlyContinue }

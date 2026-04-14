@@ -62,8 +62,15 @@ function StopVM($Name, $VmObject=$null) {
     Log "VM is running - attempting graceful shutdown..." "WARN"
     return (Try-Op {
         Stop-VM $Name -Force -EA Stop
-        if (Spin "Shutting down VM" -Cond { (Get-VM $Name).State -eq "Off" } -Timeout 60 -SuccessMsg "VM shut down") { Start-Sleep 2; return $true }
-        Stop-VM $Name -TurnOff -Force -EA Stop; Start-Sleep 3; return $true
+        if (Spin "Shutting down VM" -Cond { (Get-VM $Name).State -eq "Off" } -Timeout 35 -SuccessMsg "VM shut down") { return $true }
+
+        Log "Graceful shutdown timed out - forcing VM power off..." "WARN"
+        Stop-VM $Name -TurnOff -Force -EA Stop
+        if (Spin "Forcing VM power off" -Cond { (Get-VM $Name).State -eq "Off" } -Timeout 20 -SuccessMsg "VM powered off") {
+            return $true
+        }
+
+        throw "VM did not reach Off state after forced power off."
     } "Stop VM").OK
 }
 

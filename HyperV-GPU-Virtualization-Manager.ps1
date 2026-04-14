@@ -17,6 +17,53 @@ foreach ($moduleFile in $moduleFiles) {
     . $modulePath
 }
 
+function InvokeStartupPreflight {
+    Box "STARTUP CHECKS" "-"
+
+    $requiredCmdlets = @(
+        "Get-VM",
+        "New-VM",
+        "Set-VM",
+        "Get-VMGpuPartitionAdapter",
+        "Add-VMGpuPartitionAdapter",
+        "Set-VMGpuPartitionAdapter",
+        "Remove-VMGpuPartitionAdapter"
+    )
+    $missingCmdlets = @($requiredCmdlets | Where-Object { !(Get-Command $_ -EA SilentlyContinue) })
+    if ($missingCmdlets.Count -gt 0) {
+        Log "Hyper-V cmdlets unavailable: $($missingCmdlets -join ', ')" "ERROR"
+        Log "Enable Hyper-V and restart Windows, then run this tool again." "ERROR"
+        return $false
+    }
+
+    $edition = $null
+    try { $edition = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -EA Stop).EditionID } catch {}
+    if ($edition -and $edition -match "Home") {
+        Log "Detected Windows edition '$edition'. Hyper-V GPU workloads are typically unavailable on Home editions." "WARN"
+    }
+
+    $vmms = Get-Service -Name "vmms" -EA SilentlyContinue
+    if ($vmms -and $vmms.Status -ne "Running") {
+        Log "Hyper-V Virtual Machine Management service is not running." "WARN"
+    }
+
+    $partitionable = @()
+    try { $partitionable = @(GetPartitionableGPUs) } catch {}
+    if ($partitionable.Count -gt 0) {
+        Log "Detected $($partitionable.Count) partitionable host device(s)." "SUCCESS"
+    } else {
+        Log "No partitionable devices detected right now. GPU Partition may fail until host prerequisites are met." "WARN"
+    }
+
+    Write-Host ""
+    return $true
+}
+
+if (!(InvokeStartupPreflight)) {
+    Pause
+    exit 1
+}
+
 $menu = @("Create VM", "GPU Partition", "Unassign GPU", "Install Drivers", "Delete VM", "List VMs", "GPU Info", "Exit")
 while ($true) {
     $ch = Menu $menu "MAIN MENU"
