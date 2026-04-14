@@ -334,12 +334,13 @@ function GetDriverStoreFolderRoot($Path) {
     $norm = NormalizeDriverPath $Path
     if (!$norm) { return $null }
     $clean = $norm -replace '/', '\\'
-    $m = [regex]::Match($clean, '(?i)^[A-Za-z]:\\windows\\system32\\driverstore\\filerepository\\([^\\]+)')
+    $m = [regex]::Match($clean, '(?i)^[A-Za-z]:\\windows\\system32\\(hostdriverstore|driverstore)\\filerepository\\([^\\]+)')
     if (!$m.Success) { return $null }
-    $folder = $m.Groups[1].Value
+    $storeRoot = $m.Groups[1].Value
+    $folder = $m.Groups[2].Value
     if ([string]::IsNullOrWhiteSpace($folder)) { return $null }
-    $base = Join-Path $env:windir "System32\DriverStore\FileRepository"
-    return (Join-Path $base $folder).TrimEnd('\\')
+    $base = Join-Path $env:windir "System32\$storeRoot\FileRepository"
+    return (Join-Path $base $folder).TrimEnd([char]'\')
 }
 
 function ResolveInfPathForGpu($GPU) {

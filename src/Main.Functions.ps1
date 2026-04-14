@@ -45,7 +45,17 @@ function NewVM {
         Spin "Configuring..." 1
         Set-VMProcessor $cfg.Name -Count $cfg.CPU
         Set-VMMemory $cfg.Name -DynamicMemoryEnabled $false
-        Set-VM $cfg.Name -CheckpointType Disabled -AutomaticStopAction ShutDown -AutomaticStartAction Nothing -AutomaticCheckpointsEnabled $false
+        $vmSettings = @{
+            Name = $cfg.Name
+            CheckpointType = "Disabled"
+            AutomaticStopAction = "ShutDown"
+            AutomaticStartAction = "Nothing"
+            AutomaticCheckpointsEnabled = $false
+        }
+        if (TestHyperVCmdletParameter "Set-VM" "EnhancedSessionTransportType") {
+            $vmSettings.EnhancedSessionTransportType = "VMBus"
+        }
+        Set-VM @vmSettings
         Spin "Finalizing..." 1
         if ((Get-VM $cfg.Name).State -ne "Off") { Stop-VM $cfg.Name -Force -EA SilentlyContinue; while ((Get-VM $cfg.Name).State -ne "Off") { Start-Sleep -Milliseconds 500 } }
         Set-VMFirmware $cfg.Name -EnableSecureBoot On; Set-VMKeyProtector $cfg.Name -NewLocalKeyProtector; Enable-VMTPM $cfg.Name
@@ -82,7 +92,7 @@ function ResolveGuestSystemDestinationPath($DestinationPath) {
     if ($normalized -eq '\windows\system32\cmd.exe') { return $null }
 
     if ($normalized.StartsWith($script:DriverStorePrefixNorm)) {
-        $tail = $relDest.Substring($script:DriverStorePrefix.Length).TrimStart('\\')
+        $tail = $relDest.Substring($script:DriverStorePrefix.Length).TrimStart([char]'\')
         if ($tail) { return "$($script:HostDriverStoreRoot)\$tail" }
         return $script:HostDriverStoreRoot
     }
@@ -247,6 +257,8 @@ function RemoveGPU($VMName=$null) {
             Write-Host ""; Log "Removing system driver files..." "INFO"
             $removedFolders = 0
             $removedFiles = 0
+            $removedFolderFiles = 0
+            $cleanupFailures = 0
             $selectedGpuIds = @($gpuList | ForEach-Object { $_.DeviceID } | Where-Object { $_ } | Select-Object -Unique)
             $manifestEntries = @(ReadDriverManifest $mount.Path)
             $usedManifest = $false
@@ -256,38 +268,85 @@ function RemoveGPU($VMName=$null) {
                 if ($targetEntries) {
                     $usedManifest = $true
                     $mountRoot = [System.IO.Path]::GetFullPath($mount.Path)
+                    $residualManifestEntries = @()
 
                     foreach ($entry in $targetEntries) {
+                        $remainingFoldersForEntry = @()
+                        $remainingFilesForEntry = @()
+
                         foreach ($relFolder in @($entry.Folders)) {
-                            $trimRel = "$relFolder".TrimStart('\\', '/')
+                            $trimRel = "$relFolder".TrimStart([char[]]@('\', '/'))
                             if ([string]::IsNullOrWhiteSpace($trimRel)) { continue }
                             $absFolder = [System.IO.Path]::GetFullPath((Join-Path $mount.Path $trimRel))
-                            if (!$absFolder.StartsWith($mountRoot, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-                            if (Test-Path $absFolder) {
-                                Remove-Item $absFolder -Recurse -Force -EA SilentlyContinue
-                                if (!(Test-Path $absFolder)) { $removedFolders++; Log "- folder $(Split-Path -Leaf $absFolder)" "SUCCESS" }
+                            if (!$absFolder.StartsWith($mountRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                                $cleanupFailures++
+                                $remainingFoldersForEntry += "$relFolder"
+                                continue
+                            }
+                            if (Test-Path -LiteralPath $absFolder) {
+                                $folderFileCount = @(Get-ChildItem -LiteralPath $absFolder -Recurse -File -EA SilentlyContinue).Count
+                                Remove-Item -LiteralPath $absFolder -Recurse -Force -EA SilentlyContinue
+                                if (!(Test-Path -LiteralPath $absFolder)) {
+                                    $removedFolders++
+                                    $removedFolderFiles += $folderFileCount
+                                    Log "- folder $(Split-Path -Leaf $absFolder) ($folderFileCount files)" "SUCCESS"
+                                } else {
+                                    $cleanupFailures++
+                                    $remainingFoldersForEntry += "$relFolder"
+                                    Log "- folder $(Split-Path -Leaf $absFolder) (could not remove)" "WARN"
+                                }
                             }
                         }
 
                         foreach ($relFile in @($entry.Files)) {
-                            $trimRel = "$relFile".TrimStart('\\', '/')
+                            $trimRel = "$relFile".TrimStart([char[]]@('\', '/'))
                             if ([string]::IsNullOrWhiteSpace($trimRel)) { continue }
                             $absFile = [System.IO.Path]::GetFullPath((Join-Path $mount.Path $trimRel))
-                            if (!$absFile.StartsWith($mountRoot, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-                            if (Test-Path $absFile) {
-                                Remove-Item $absFile -Force -EA SilentlyContinue
-                                if (!(Test-Path $absFile)) { $removedFiles++; Log "- $(Split-Path -Leaf $absFile)" "SUCCESS" }
+                            if (!$absFile.StartsWith($mountRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                                $cleanupFailures++
+                                $remainingFilesForEntry += "$relFile"
+                                continue
+                            }
+                            if (Test-Path -LiteralPath $absFile) {
+                                Remove-Item -LiteralPath $absFile -Force -EA SilentlyContinue
+                                if (!(Test-Path -LiteralPath $absFile)) {
+                                    $removedFiles++
+                                    Log "- $(Split-Path -Leaf $absFile)" "SUCCESS"
+                                } else {
+                                    $cleanupFailures++
+                                    $remainingFilesForEntry += "$relFile"
+                                    Log "- $(Split-Path -Leaf $absFile) (could not remove)" "WARN"
+                                }
+                            }
+                        }
+
+                        if (($remainingFoldersForEntry.Count -gt 0) -or ($remainingFilesForEntry.Count -gt 0)) {
+                            $residualManifestEntries += [PSCustomObject]@{
+                                EntryId = if ($entry.EntryId) { $entry.EntryId } else { [Guid]::NewGuid().Guid }
+                                CapturedUtc = if ($entry.CapturedUtc) { $entry.CapturedUtc } else { (Get-Date).ToUniversalTime().ToString("o") }
+                                VMName = if ($entry.VMName) { $entry.VMName } else { $VMName }
+                                GpuDeviceId = $entry.GpuDeviceId
+                                GpuName = $entry.GpuName
+                                Resolver = if ($entry.Resolver) { $entry.Resolver } else { "Unknown" }
+                                InfPath = if ($entry.PSObject.Properties["InfPath"]) { $entry.InfPath } else { $null }
+                                Missing = @($entry.Missing)
+                                Folders = @($remainingFoldersForEntry | Sort-Object -Unique)
+                                Files = @($remainingFilesForEntry | Sort-Object -Unique)
                             }
                         }
                     }
 
                     $targetEntryIds = @($targetEntries | ForEach-Object { $_.EntryId } | Where-Object { $_ })
-                    $remainingManifest = if ($targetEntryIds) {
+                    $remainingManifestBase = if ($targetEntryIds) {
                         @($manifestEntries | Where-Object { $targetEntryIds -notcontains $_.EntryId })
                     } else {
                         @($manifestEntries | Where-Object { $_.GpuDeviceId -notin $selectedGpuIds })
                     }
+                    $remainingManifest = @($remainingManifestBase + $residualManifestEntries)
                     WriteDriverManifest $mount.Path $remainingManifest
+                    if ($residualManifestEntries.Count -gt 0) {
+                        Log "Retained $($residualManifestEntries.Count) manifest record(s) for leftover paths" "WARN"
+                    }
                     Log "Cleaned files using manifest records" "INFO"
                 }
             }
@@ -327,8 +386,16 @@ function RemoveGPU($VMName=$null) {
                     foreach ($leaf in $folderMap.Values) {
                         $fp = Join-Path $repo $leaf
                         if (Test-Path $fp) {
-                            Remove-Item $fp -Recurse -Force -EA SilentlyContinue
-                            if (!(Test-Path $fp)) { $removedFolders++; Log "- folder $leaf" "SUCCESS" }
+                            $folderFileCount = @(Get-ChildItem -LiteralPath $fp -Recurse -File -EA SilentlyContinue).Count
+                            Remove-Item -LiteralPath $fp -Recurse -Force -EA SilentlyContinue
+                            if (!(Test-Path -LiteralPath $fp)) {
+                                $removedFolders++
+                                $removedFolderFiles += $folderFileCount
+                                Log "- folder $leaf ($folderFileCount files)" "SUCCESS"
+                            } else {
+                                $cleanupFailures++
+                                Log "- folder $leaf (could not remove)" "WARN"
+                            }
                         }
                     }
                 }
@@ -340,15 +407,25 @@ function RemoveGPU($VMName=$null) {
                         if ([string]::IsNullOrWhiteSpace($relDest)) { continue }
                         $fp = "$($mount.Path)$relDest"
                         if (Test-Path $fp) {
-                            Remove-Item $fp -Force -EA SilentlyContinue
-                            if (!(Test-Path $fp)) { $removedFiles++; Log "- $($f.N)" "SUCCESS" }
+                            Remove-Item -LiteralPath $fp -Force -EA SilentlyContinue
+                            if (!(Test-Path -LiteralPath $fp)) {
+                                $removedFiles++
+                                Log "- $($f.N)" "SUCCESS"
+                            } else {
+                                $cleanupFailures++
+                                Log "- $($f.N) (could not remove)" "WARN"
+                            }
                         }
                     }
                 }
             }
 
             if (($removedFiles -gt 0) -or ($removedFolders -gt 0)) {
-                Write-Host ""; Log "Removed $removedFiles system file(s) and $removedFolders driver folder(s)" "SUCCESS"
+                $totalRemovedFiles = $removedFiles + $removedFolderFiles
+                Write-Host ""; Log "Removed $totalRemovedFiles file(s): $removedFiles explicit system path(s) + $removedFolderFiles file(s) from $removedFolders removed folder(s)" "SUCCESS"
+                if ($cleanupFailures -gt 0) {
+                    Log "$cleanupFailures path(s) could not be removed" "WARN"
+                }
             } else {
                 Log "No matching injected driver files found for the selected GPU partition(s)" "INFO"
             }
@@ -493,7 +570,7 @@ function InstallDrivers($VMName=$null) {
                 $srcFiles = @(Get-ChildItem $f -Recurse -File -EA SilentlyContinue)
                 $preparedFolderDirs = @{ "$($d.ToLowerInvariant())" = $true }
                 foreach ($sf in $srcFiles) {
-                    $rel = $sf.FullName.Substring($f.Length).TrimStart('\\')
+                    $rel = $sf.FullName.Substring($f.Length).TrimStart([char]'\')
                     $dstFile = Join-Path $d $rel
                     $dstParent = Split-Path -Parent $dstFile
                     $dstParentKey = "$dstParent".ToLowerInvariant()
