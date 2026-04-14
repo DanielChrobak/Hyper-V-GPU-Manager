@@ -486,12 +486,43 @@ function ResolveInfPathForGpu($GPU) {
 
 function GetInfReferences($InfPath) {
     if (!(Test-Path $InfPath)) { return @() }
-    $content = Get-Content $InfPath -Raw -EA SilentlyContinue
-    if ([string]::IsNullOrWhiteSpace($content)) { return @() }
+    $lines = @(Get-Content $InfPath -EA SilentlyContinue)
+    if (!$lines -or $lines.Count -eq 0) { return @() }
 
     $pattern = '[\w\-\.]+\.(?:sys|dll|exe|cat|inf|bin|vp|cpa|dat|cfg|json|ini|mui|pnf)'
-    $refs = @([regex]::Matches($content, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) | ForEach-Object { $_.Value } | Sort-Object -Unique)
-    return $refs
+    $refs = @{}
+    $currentSection = $null
+
+    foreach ($rawLine in $lines) {
+        $line = "$rawLine"
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+        $commentIndex = $line.IndexOf(';')
+        if ($commentIndex -ge 0) {
+            $line = $line.Substring(0, $commentIndex)
+        }
+
+        $line = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+        $sectionMatch = [regex]::Match($line, '^\[(.+)\]$')
+        if ($sectionMatch.Success) {
+            $currentSection = $sectionMatch.Groups[1].Value.Trim()
+            continue
+        }
+
+        # Registry lines and IncludedSubPackages metadata frequently contain non-file tokens.
+        if ($line -match '^(?i)(HKR|HKLM|HKCR|HKCU|HKU)\s*,') { continue }
+        if ($currentSection -and $currentSection -match '^(?i)IncludedSubPackages(?:__\d+)?$') { continue }
+
+        foreach ($m in [regex]::Matches($line, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+            $name = "$($m.Value)"
+            if ([string]::IsNullOrWhiteSpace($name)) { continue }
+            $refs[$name.ToLowerInvariant()] = $name
+        }
+    }
+
+    return @($refs.Values | Sort-Object -Unique)
 }
 
 function GetDrivers($GPU) {
