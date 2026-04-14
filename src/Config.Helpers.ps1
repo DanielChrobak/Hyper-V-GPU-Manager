@@ -240,7 +240,7 @@ function Menu($Items, $Title="MENU") {
             "Escape" { return $null }
             default {
                 if ($k.KeyChar -match "^[1-9]$") {
-                    $idx = [int]$k.KeyChar - 1
+                    $idx = [int]$k.KeyChar.ToString() - 1
                     if ($idx -lt $Items.Count) { return $idx }
                 }
             }

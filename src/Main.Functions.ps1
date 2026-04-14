@@ -22,6 +22,7 @@ function NewVM {
         Write-Host ""
         if (Confirm "Enable automated Windows installation? (Skips most setup screens)") {
             $imageSelection = $null
+            $localAccountConfig = $null
             $imageOptions = GetWindowsInstallImageOptions $cfg.ISO
             if ($imageOptions -and $imageOptions.Count -gt 0) {
                 $imageSelection = PromptWindowsInstallImageSelection $imageOptions
@@ -29,7 +30,19 @@ function NewVM {
                 Log "Could not enumerate Windows installation options; setup edition selection will remain manual." "INFO"
             }
 
-            $iso = NewAutoISO $cfg.ISO $cfg.Name $imageSelection
+            if (Confirm "Set local username/password in unattended setup?") {
+                $unattendUsername = Read-Host "  Username (leave empty for default: User)"
+                $unattendPassword = Read-Host "  Password (can be empty)"
+                $localAccountConfig = [PSCustomObject]@{
+                    Username = "$unattendUsername"
+                    Password = "$unattendPassword"
+                }
+
+                $effectiveUsername = if ([string]::IsNullOrWhiteSpace($unattendUsername)) { "User" } else { $unattendUsername.Trim() }
+                Log ("Unattended local account will be created: {0}" -f $effectiveUsername) "INFO"
+            }
+
+            $iso = NewAutoISO $cfg.ISO $cfg.Name $imageSelection $localAccountConfig
             if ($iso) { Log "Will use automated installation ISO" "SUCCESS"; Write-Host "" }
             else { Log "Falling back to original ISO" "WARN"; $iso = $cfg.ISO; Write-Host "" }
         } else { $iso = $cfg.ISO }

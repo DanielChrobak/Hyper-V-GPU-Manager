@@ -98,7 +98,7 @@ $script:AutoXMLTemplate = @'
             <UILanguage>__UI_LANGUAGE__</UILanguage>
             <UserLocale>__USER_LOCALE__</UserLocale>
         </component>
-        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
             <OOBE>
                 <HideEULAPage>true</HideEULAPage>
                 <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
@@ -107,6 +107,7 @@ $script:AutoXMLTemplate = @'
                 <ProtectYourPC>3</ProtectYourPC>
             </OOBE>
             <TimeZone>UTC</TimeZone>
+            __LOCAL_ACCOUNT_SETUP__
         </component>
     </settings>
 </unattend>
@@ -253,7 +254,52 @@ function BuildImageSelectionXml($ImageSelection) {
 "@
 }
 
-function BuildAutoUnattendXml($LocaleSettings, $ImageSelection=$null) {
+function BuildLocalAccountXml($LocalAccount) {
+    if (!$LocalAccount) { return "" }
+
+    $username = ""
+    if ($LocalAccount.PSObject.Properties.Name -contains "Username") {
+        $username = "$($LocalAccount.Username)"
+    }
+    $username = $username.Trim()
+    if ([string]::IsNullOrWhiteSpace($username)) { $username = "User" }
+
+    $password = ""
+    if ($LocalAccount.PSObject.Properties.Name -contains "Password") {
+        $password = "$($LocalAccount.Password)"
+    }
+
+    $escUser = XmlEsc $username
+    $escPass = XmlEsc $password
+
+    return @"
+            <UserAccounts>
+                <LocalAccounts>
+                    <LocalAccount wcm:action="add">
+                        <Name>$escUser</Name>
+                        <DisplayName>$escUser</DisplayName>
+                        <Group>Administrators</Group>
+                        <Password>
+                            <Value>$escPass</Value>
+                            <PlainText>true</PlainText>
+                        </Password>
+                    </LocalAccount>
+                </LocalAccounts>
+            </UserAccounts>
+            <AutoLogon>
+                <Password>
+                    <Value>$escPass</Value>
+                    <PlainText>true</PlainText>
+                </Password>
+                <Enabled>true</Enabled>
+                <LogonCount>1</LogonCount>
+                <Username>$escUser</Username>
+            </AutoLogon>
+            <RegisteredOwner>$escUser</RegisteredOwner>
+"@
+}
+
+function BuildAutoUnattendXml($LocaleSettings, $ImageSelection=$null, $LocalAccount=$null) {
     if (!$LocaleSettings) {
         $LocaleSettings = [PSCustomObject]@{
             InputLocale  = "en-US"
@@ -269,10 +315,11 @@ function BuildAutoUnattendXml($LocaleSettings, $ImageSelection=$null) {
     $xml = $xml.Replace("__SYSTEM_LOCALE__", (XmlEsc $LocaleSettings.SystemLocale))
     $xml = $xml.Replace("__UI_LANGUAGE__", (XmlEsc $LocaleSettings.UILanguage))
     $xml = $xml.Replace("__USER_LOCALE__", (XmlEsc $LocaleSettings.UserLocale))
+    $xml = $xml.Replace("__LOCAL_ACCOUNT_SETUP__", (BuildLocalAccountXml $LocalAccount))
     return $xml
 }
 
-function NewAutoISO($Src, $VM, $ImageSelection=$null) {
+function NewAutoISO($Src, $VM, $ImageSelection=$null, $LocalAccount=$null) {
     Box "AUTOMATED INSTALLATION SETUP" "-"; Log "Creating automated installation ISO..." "INFO"; Write-Host ""
     $mount = $null; $work = $null
     try {
@@ -296,7 +343,11 @@ function NewAutoISO($Src, $VM, $ImageSelection=$null) {
         if ($ImageSelection -and $ImageSelection.Index) {
             Log ("Using selected installation image index: {0}" -f $ImageSelection.Index) "INFO"
         }
-        BuildAutoUnattendXml $locale $ImageSelection | Out-File "$work\autounattend.xml" -Encoding UTF8 -Force
+        if ($LocalAccount) {
+            $accountName = if ([string]::IsNullOrWhiteSpace("$($LocalAccount.Username)")) { "User" } else { "$($LocalAccount.Username)".Trim() }
+            Log ("Using unattended local account: {0}" -f $accountName) "INFO"
+        }
+        BuildAutoUnattendXml $locale $ImageSelection $LocalAccount | Out-File "$work\autounattend.xml" -Encoding UTF8 -Force
         Log "autounattend.xml created" "SUCCESS"
         Spin "Dismounting source ISO..." 1
         Dismount-DiskImage -ImagePath $Src -EA SilentlyContinue | Out-Null; $mount = $null
