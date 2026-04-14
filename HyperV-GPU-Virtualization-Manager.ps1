@@ -6,8 +6,7 @@
     [string]$GpuName,
     [ValidateRange(0, 100)]
     [int]$GpuPercent = 0,
-    [ValidateSet("gaming", "development", "ml", "ml-training", "custom")]
-    [string]$Preset = "development",
+    [string]$Preset,
     [int]$Cpu = 0,
     [int]$RamGB = 0,
     [int]$StorageGB = 0,
@@ -53,6 +52,8 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit
 }
 
+$script:HyperVGpuProjectRoot = $PSScriptRoot
+
 $moduleFiles = @(
     "src\Core\Config.Helpers.ps1",
     "src\Core\Gpu\Gpu.Helpers.ps1",
@@ -71,7 +72,10 @@ foreach ($moduleFile in $moduleFiles) {
     . $modulePath
 }
 
-if (!$SkipPreflight -and $Command -ne "help" -and $Command -ne "preflight") {
+InitializeHyperVGpuVmProfiles -ProjectRoot $PSScriptRoot
+
+$skipPreflightCommands = @("help", "preflight")
+if (!$SkipPreflight -and ($skipPreflightCommands -notcontains $Command.ToLowerInvariant())) {
     $preflightResult = Invoke-HyperVGpuApiPreflight
     if (!$preflightResult.Success) {
         if ($Json) {

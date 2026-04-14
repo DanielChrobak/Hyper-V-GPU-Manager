@@ -8,6 +8,12 @@ function NewVM(
     [switch]$OverwriteVhd
 ) {
     $cfg = $null
+    $selectedVmProfile = $null
+    $profileEnableAutoInstall = $null
+    $profileImageSelection = $null
+    $profileLocalAccountConfig = $null
+    $profileOverwriteVhd = $false
+
     if ($Config) {
         $cfg = @{
             Name = "$($Config.Name)"
@@ -28,20 +34,92 @@ function NewVM(
             return $false
         }
 
-        $items = @($script:Presets | ForEach-Object { $_.L }) + "Custom"
+        $projectRoot = if ($script:HyperVGpuProjectRoot -and (Test-Path $script:HyperVGpuProjectRoot)) {
+            $script:HyperVGpuProjectRoot
+        } elseif ($PSScriptRoot) {
+            $srcRoot = Split-Path -Parent $PSScriptRoot
+            if ($srcRoot) {
+                $repoRoot = Split-Path -Parent $srcRoot
+                if ($repoRoot -and (Test-Path $repoRoot)) { $repoRoot } else { $PSScriptRoot }
+            } else {
+                $PSScriptRoot
+            }
+        } else {
+            (Get-Location).Path
+        }
+
+        $vmProfiles = @(
+            GetHyperVGpuVmProfileInventory -ProjectRoot $projectRoot |
+            Sort-Object @{Expression = { if ($_.IsDefault) { 0 } else { 1 } } }, Name
+        )
+
+        $items = @($script:Presets | ForEach-Object { "[Preset] $($_.L)" })
+        if ($vmProfiles.Count -gt 0) {
+            $items += @($vmProfiles | ForEach-Object {
+                $defaultTag = if ($_.IsDefault) { " [default]" } else { "" }
+                "[Profile] {0}{1} | VM:{2} | {3}vCPU, {4}GB, {5}GB" -f $_.Name, $defaultTag, $_.VmName, $_.Cpu, $_.RamGB, $_.StorageGB
+            })
+        }
+        $items += "Custom"
+
         $ch = Menu -Items $items -Title "VM CONFIG"
         if ($null -eq $ch) { return $null }
-        if ($ch -lt 3) {
+
+        if ($ch -lt $script:Presets.Count) {
             $p = $script:Presets[$ch]; Write-Host ""
             $name = Read-Host "  Name (default: $($p.N))"; $iso = Read-Host "  ISO path (press Enter to skip)"; Write-Host ""
             $cfg = @{Name=if ($name) { $name } else { $p.N }; CPU=$p.C; RAM=$p.R; Storage=$p.S; Path=$script:Paths.VHD; ISO=$iso}
+        } elseif ($ch -lt ($script:Presets.Count + $vmProfiles.Count)) {
+            $profile = $vmProfiles[$ch - $script:Presets.Count]
+            $selectedVmProfile = $profile
+            $cfg = @{
+                Name = "$($profile.VmName)"
+                CPU = [int]$profile.Cpu
+                RAM = [int]$profile.RamGB
+                Storage = [int]$profile.StorageGB
+                Path = if ($profile.VhdPath) { "$($profile.VhdPath)" } else { $script:Paths.VHD }
+                ISO = if ($profile.IsoPath) { "$($profile.IsoPath)" } else { $null }
+            }
+
+            $profileEnableAutoInstall = [bool]$profile.EnableAutoInstall
+            $profileOverwriteVhd = [bool]$profile.OverwriteVhd
+            if ($profile.InstallImageIndex -gt 0) {
+                $profileImageSelection = [PSCustomObject]@{
+                    Index = [int]$profile.InstallImageIndex
+                    Name = "Image-$($profile.InstallImageIndex)"
+                }
+            }
+            if ($profile.UnattendUsername -or $profile.UnattendPassword) {
+                $profileLocalAccountConfig = [PSCustomObject]@{
+                    Username = if ($profile.UnattendUsername) { "$($profile.UnattendUsername)" } else { "" }
+                    Password = if ($profile.UnattendPassword) { "$($profile.UnattendPassword)" } else { "" }
+                }
+            }
+
+            Log "Using VM profile '$($profile.Name)'." "INFO"
+            Write-Host ""
         } else {
             Box "CUSTOM CONFIG" "-"
             $cfg = @{
-                Name = Input "VM Name" { ![string]::IsNullOrWhiteSpace($_) }
-                CPU = [int](Input "CPU Cores" { [int]::TryParse($_, [ref]$null) -and [int]$_ -gt 0 })
-                RAM = [int](Input "RAM (GB)" { [int]::TryParse($_, [ref]$null) -and [int]$_ -gt 0 })
-                Storage = [int](Input "Storage (GB)" { [int]::TryParse($_, [ref]$null) -and [int]$_ -gt 0 })
+                Name = Input "VM Name" {
+                    param($value)
+                    ![string]::IsNullOrWhiteSpace("$value")
+                }
+                CPU = [int](Input "CPU Cores" {
+                    param($value)
+                    $parsed = 0
+                    [int]::TryParse("$value", [ref]$parsed) -and $parsed -gt 0
+                })
+                RAM = [int](Input "RAM (GB)" {
+                    param($value)
+                    $parsed = 0
+                    [int]::TryParse("$value", [ref]$parsed) -and $parsed -gt 0
+                })
+                Storage = [int](Input "Storage (GB)" {
+                    param($value)
+                    $parsed = 0
+                    [int]::TryParse("$value", [ref]$parsed) -and $parsed -gt 0
+                })
                 Path = $script:Paths.VHD; ISO = Read-Host "  ISO path (press Enter to skip)"
             }
         }
@@ -67,6 +145,16 @@ function NewVM(
 
         if ($NonInteractive) {
             $useAutoInstall = $EnableAutoInstall.IsPresent
+        } elseif ($selectedVmProfile) {
+            $useAutoInstall = [bool]$profileEnableAutoInstall
+            $effectiveImageSelection = $profileImageSelection
+            $effectiveLocalAccountConfig = $profileLocalAccountConfig
+
+            if ($useAutoInstall) {
+                Log "Using unattended install settings from VM profile '$($selectedVmProfile.Name)'." "INFO"
+            } else {
+                Log "VM profile '$($selectedVmProfile.Name)' has unattended install disabled." "INFO"
+            }
         } else {
             Write-Host ""
             $useAutoInstall = Confirm "Enable automated Windows installation? (Skips most setup screens)"
@@ -114,16 +202,19 @@ function NewVM(
     Box "CREATING VM"; Log "VM: $($cfg.Name) | vCPU: $($cfg.CPU) | RAM: $(FormatCapacityFromGB $cfg.RAM) | Storage: $(FormatCapacityFromGB $cfg.Storage)" "INFO"; Write-Host ""
     $vhd = Join-Path $cfg.Path "$($cfg.Name).vhdx"
     if (Get-VM $cfg.Name -EA SilentlyContinue) { Log "VM already exists" "ERROR"; return $false }
+    $effectiveOverwriteVhd = $OverwriteVhd.IsPresent -or $profileOverwriteVhd
 
     if (Test-Path $vhd) {
         if ($NonInteractive) {
-            if (!$OverwriteVhd) {
+            if (!$effectiveOverwriteVhd) {
                 Log "VHDX already exists at $vhd. Re-run with overwrite enabled to replace it." "ERROR"
                 return $false
             }
-        } elseif (!(Confirm "VHDX exists. Overwrite?")) {
+        } elseif (!$effectiveOverwriteVhd -and !(Confirm "VHDX exists. Overwrite?")) {
             Log "Cancelled" "WARN"
             return $null
+        } elseif ($effectiveOverwriteVhd -and $selectedVmProfile) {
+            Log "Existing VHDX will be overwritten based on VM profile setting." "WARN"
         }
     }
     if (Test-Path $vhd) { Remove-Item $vhd -Force }
@@ -224,7 +315,11 @@ function SetGPU($VMName=$null, $Pct=0, $GPUPath=$null, $GPUName=$null, [switch]$
             Log "GPU allocation percentage is required for non-interactive mode." "ERROR"
             return $false
         }
-        Write-Host ""; $Pct = [int](Input "GPU % to allocate (1-100)" { [int]::TryParse($_, [ref]$null) -and [int]$_ -ge 1 -and [int]$_ -le 100 })
+        Write-Host ""; $Pct = [int](Input "GPU % to allocate (1-100)" {
+            param($value)
+            $parsed = 0
+            [int]::TryParse("$value", [ref]$parsed) -and $parsed -ge 1 -and $parsed -le 100
+        })
     }
     $Pct = [Math]::Max(1, [Math]::Min(100, $Pct))
     if (!$GPUName) { $GPUName = (GPUName $GPUPath); if (!$GPUName) { $GPUName = "GPU" } }

@@ -17,6 +17,7 @@ function Show-HyperVGpuCliHelp {
     Write-Host "    .\HyperV-GPU-Virtualization-Manager.ps1 -Command create-vm -Preset gaming -VMName GameVM -IsoPath C:\ISOs\Win11.iso -OverwriteVhd" -ForegroundColor Gray
     Write-Host "    .\HyperV-GPU-Virtualization-Manager.ps1 -Command set-gpu -VMName GameVM -GpuPath '<instance path>' -GpuPercent 50" -ForegroundColor Gray
     Write-Host "    .\HyperV-GPU-Virtualization-Manager.ps1 -Command list-vms -Json" -ForegroundColor Gray
+    Write-Host "  VM template profiles are managed from interactive mode: Main Menu -> VM Profiles" -ForegroundColor Gray
     Write-Host ""
 }
 
@@ -55,15 +56,18 @@ function Resolve-HyperVGpuCliVmConfig(
     [string]$VhdPath,
     [string]$IsoPath
 ) {
-    $presetKey = if ($Preset) { $Preset.ToLowerInvariant() } else { "development" }
-
-    $presetDefaults = switch ($presetKey) {
-        "gaming" { [PSCustomObject]@{Name="Gaming-VM"; Cpu=8; Ram=16; Storage=256} }
-        "development" { [PSCustomObject]@{Name="Dev-VM"; Cpu=4; Ram=8; Storage=128} }
-        "ml" { [PSCustomObject]@{Name="ML-VM"; Cpu=12; Ram=32; Storage=512} }
-        "ml-training" { [PSCustomObject]@{Name="ML-VM"; Cpu=12; Ram=32; Storage=512} }
-        "custom" { $null }
-        default { $null }
+    $presetSelection = if (![string]::IsNullOrWhiteSpace($Preset)) { $Preset } else { $script:DefaultPresetKey }
+    $presetDefaults = $null
+    if (![string]::IsNullOrWhiteSpace($presetSelection) -and $presetSelection.ToLowerInvariant() -ne "custom") {
+        $presetDefaults = GetHyperVGpuPresetDefinition $presetSelection
+        if (!$presetDefaults) {
+            Log "Preset '$presetSelection' was not found." "ERROR"
+            $availablePresetKeys = @((GetHyperVGpuPresetDefinitions | ForEach-Object { $_.Key }))
+            if ($availablePresetKeys.Count -gt 0) {
+                Log "Available presets: $($availablePresetKeys -join ', ')" "INFO"
+            }
+            return $null
+        }
     }
 
     $resolvedName = if ($VMName) { $VMName } elseif ($presetDefaults) { $presetDefaults.Name } else { $null }

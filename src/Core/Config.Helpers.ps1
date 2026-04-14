@@ -1,11 +1,462 @@
 ﻿#region Config & Helpers
-$script:Paths = @{VHD="C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"; Mount="C:\ProgramData\HyperV-Mounts"; ISO="C:\ProgramData\HyperV-ISOs"}
+$script:DefaultPaths = @{VHD="C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\"; Mount="C:\ProgramData\HyperV-Mounts"; ISO="C:\ProgramData\HyperV-ISOs"}
 $script:GPUReg = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-$script:Presets = @(
-    @{L="Gaming | 8vCPU, 16GB, 256GB"; N="Gaming-VM"; C=8; R=16; S=256},
-    @{L="Development | 4vCPU, 8GB, 128GB"; N="Dev-VM"; C=4; R=8; S=128},
-    @{L="ML Training | 12vCPU, 32GB, 512GB"; N="ML-VM"; C=12; R=32; S=512}
+$script:DefaultPresets = @(
+    @{K="gaming"; L="Gaming | 8vCPU, 16GB, 256GB"; N="Gaming-VM"; C=8; R=16; S=256},
+    @{K="development"; L="Development | 4vCPU, 8GB, 128GB"; N="Dev-VM"; C=4; R=8; S=128},
+    @{K="ml-training"; L="ML Training | 12vCPU, 32GB, 512GB"; N="ML-VM"; C=12; R=32; S=512}
 )
+
+$script:Paths = @{} + $script:DefaultPaths
+$script:Presets = @($script:DefaultPresets | ForEach-Object { @{} + $_ })
+$script:DefaultPresetKey = "development"
+$script:VmProfileSchemaVersion = 1
+$script:VmProfileStores = @{}
+
+function GetHyperVGpuObjectValue($Obj, [string]$Name, $Default=$null) {
+    if ($null -eq $Obj) { return $Default }
+
+    if ($Obj -is [hashtable]) {
+        if ($Obj.ContainsKey($Name)) { return $Obj[$Name] }
+        return $Default
+    }
+
+    $prop = $Obj.PSObject.Properties[$Name]
+    if ($prop) { return $prop.Value }
+    return $Default
+}
+
+function GetHyperVGpuProfileMapKey([string]$Name) {
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+    return $Name.Trim().ToLowerInvariant()
+}
+
+function ConvertToHyperVGpuPresetKey([string]$Key) {
+    if ([string]::IsNullOrWhiteSpace($Key)) { return $null }
+    $normalized = $Key.Trim().ToLowerInvariant()
+    if ($normalized -eq "ml") { $normalized = "ml-training" }
+    $normalized = ($normalized -replace "[^a-z0-9]+", "-").Trim('-')
+    if ([string]::IsNullOrWhiteSpace($normalized)) { return $null }
+    return $normalized
+}
+
+function ConvertToHyperVGpuPositiveInt($Value) {
+    $parsed = 0
+    if ([int]::TryParse("$Value", [ref]$parsed) -and $parsed -gt 0) {
+        return [int]$parsed
+    }
+    return 0
+}
+
+function GetHyperVGpuPresetDefinition([string]$PresetKey) {
+    $lookupKey = ConvertToHyperVGpuPresetKey $PresetKey
+    if ([string]::IsNullOrWhiteSpace($lookupKey)) { return $null }
+
+    foreach ($preset in @($script:Presets)) {
+        if ($preset.K -eq $lookupKey) {
+            return [PSCustomObject]@{
+                Key = "$($preset.K)"
+                Label = "$($preset.L)"
+                Name = "$($preset.N)"
+                Cpu = [int]$preset.C
+                Ram = [int]$preset.R
+                Storage = [int]$preset.S
+            }
+        }
+    }
+
+    return $null
+}
+
+function GetHyperVGpuPresetDefinitions {
+    return @($script:Presets | ForEach-Object {
+        [PSCustomObject]@{
+            Key = "$($_.K)"
+            Label = "$($_.L)"
+            Name = "$($_.N)"
+            Cpu = [int]$_.C
+            Ram = [int]$_.R
+            Storage = [int]$_.S
+        }
+    })
+}
+
+function GetHyperVGpuVmProfileStorePath([string]$ProjectRoot=$PSScriptRoot) {
+    return (Join-Path $ProjectRoot ".hyperv-gpu-manager.vm-profiles.json")
+}
+
+function NewHyperVGpuVmProfileStore([string]$ProjectRoot=$PSScriptRoot) {
+    return [PSCustomObject]@{
+        Path = (GetHyperVGpuVmProfileStorePath -ProjectRoot $ProjectRoot)
+        DefaultProfile = $null
+        Profiles = @{}
+    }
+}
+
+function ConvertToHyperVGpuVmProfileObject($Profile) {
+    if ($null -eq $Profile) { return $null }
+
+    $name = GetHyperVGpuObjectValue $Profile "Name"
+    if ([string]::IsNullOrWhiteSpace($name)) { return $null }
+
+    $vmName = GetHyperVGpuObjectValue $Profile "VmName" (GetHyperVGpuObjectValue $Profile "VMName")
+    if ([string]::IsNullOrWhiteSpace($vmName)) { $vmName = $name }
+
+    $cpu = ConvertToHyperVGpuPositiveInt (GetHyperVGpuObjectValue $Profile "Cpu" (GetHyperVGpuObjectValue $Profile "CPU"))
+    $ramGB = ConvertToHyperVGpuPositiveInt (GetHyperVGpuObjectValue $Profile "RamGB" (GetHyperVGpuObjectValue $Profile "RAM"))
+    $storageGB = ConvertToHyperVGpuPositiveInt (GetHyperVGpuObjectValue $Profile "StorageGB" (GetHyperVGpuObjectValue $Profile "Storage"))
+    if ($cpu -le 0 -or $ramGB -le 0 -or $storageGB -le 0) { return $null }
+
+    $vhdPath = GetHyperVGpuObjectValue $Profile "VhdPath" (GetHyperVGpuObjectValue $Profile "Path")
+    if ([string]::IsNullOrWhiteSpace($vhdPath)) { $vhdPath = $script:Paths.VHD }
+
+    $isoPath = GetHyperVGpuObjectValue $Profile "IsoPath" (GetHyperVGpuObjectValue $Profile "ISO")
+    if ([string]::IsNullOrWhiteSpace($isoPath)) { $isoPath = $null }
+
+    $enableAutoInstall = [bool](GetHyperVGpuObjectValue $Profile "EnableAutoInstall" $false)
+
+    $installImageIndex = 0
+    $rawInstallImageIndex = GetHyperVGpuObjectValue $Profile "InstallImageIndex" 0
+    [int]::TryParse("$rawInstallImageIndex", [ref]$installImageIndex) | Out-Null
+    if ($installImageIndex -lt 0) { $installImageIndex = 0 }
+
+    $unattendUsername = GetHyperVGpuObjectValue $Profile "UnattendUsername"
+    if ([string]::IsNullOrWhiteSpace($unattendUsername)) { $unattendUsername = $null }
+
+    $unattendPassword = GetHyperVGpuObjectValue $Profile "UnattendPassword"
+    if ([string]::IsNullOrWhiteSpace($unattendPassword)) { $unattendPassword = $null }
+
+    $overwriteVhd = [bool](GetHyperVGpuObjectValue $Profile "OverwriteVhd" $false)
+
+    return [PSCustomObject]@{
+        Name = "$name"
+        VmName = "$vmName"
+        Cpu = [int]$cpu
+        RamGB = [int]$ramGB
+        StorageGB = [int]$storageGB
+        VhdPath = "$vhdPath"
+        IsoPath = if ($isoPath) { "$isoPath" } else { $null }
+        EnableAutoInstall = [bool]$enableAutoInstall
+        InstallImageIndex = [int]$installImageIndex
+        UnattendUsername = if ($unattendUsername) { "$unattendUsername" } else { $null }
+        UnattendPassword = if ($unattendPassword) { "$unattendPassword" } else { $null }
+        OverwriteVhd = [bool]$overwriteVhd
+    }
+}
+
+function ImportHyperVGpuVmProfileStore([string]$ProjectRoot=$PSScriptRoot) {
+    $store = NewHyperVGpuVmProfileStore -ProjectRoot $ProjectRoot
+    if (!(Test-Path $store.Path)) { return $store }
+
+    $raw = $null
+    try {
+        $raw = Get-Content $store.Path -Raw -EA Stop
+    } catch {
+        Log "Could not read VM profile store: $($store.Path)" "WARN"
+        return $store
+    }
+
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $store }
+
+    $doc = $null
+    try {
+        $doc = $raw | ConvertFrom-Json -EA Stop
+    } catch {
+        Log "Could not parse VM profile store. Ignoring invalid JSON at $($store.Path)." "WARN"
+        return $store
+    }
+
+    $defaultProfile = GetHyperVGpuObjectValue $doc "DefaultProfile"
+    if (![string]::IsNullOrWhiteSpace($defaultProfile)) {
+        $store.DefaultProfile = "$defaultProfile"
+    }
+
+    $rawProfiles = GetHyperVGpuObjectValue $doc "Profiles" @()
+    if ($rawProfiles -isnot [System.Array]) { $rawProfiles = @($rawProfiles) }
+
+    foreach ($rawProfile in @($rawProfiles)) {
+        $profile = ConvertToHyperVGpuVmProfileObject $rawProfile
+        if (!$profile) { continue }
+        $store.Profiles[(GetHyperVGpuProfileMapKey $profile.Name)] = $profile
+    }
+
+    if (![string]::IsNullOrWhiteSpace($store.DefaultProfile)) {
+        $defaultKey = GetHyperVGpuProfileMapKey $store.DefaultProfile
+        if (!$defaultKey -or !$store.Profiles.ContainsKey($defaultKey)) {
+            $store.DefaultProfile = $null
+        }
+    }
+
+    return $store
+}
+
+function ExportHyperVGpuVmProfileStore($Store) {
+    if ($null -eq $Store -or [string]::IsNullOrWhiteSpace($Store.Path)) { return $false }
+
+    $profileList = @()
+    foreach ($entry in @($Store.Profiles.GetEnumerator() | Sort-Object Key)) {
+        $profile = $entry.Value
+        if (!$profile) { continue }
+
+        $profileList += [PSCustomObject]@{
+            Name = "$($profile.Name)"
+            VmName = "$($profile.VmName)"
+            Cpu = [int]$profile.Cpu
+            RamGB = [int]$profile.RamGB
+            StorageGB = [int]$profile.StorageGB
+            VhdPath = "$($profile.VhdPath)"
+            IsoPath = if ($profile.IsoPath) { "$($profile.IsoPath)" } else { $null }
+            EnableAutoInstall = [bool]$profile.EnableAutoInstall
+            InstallImageIndex = [int]$profile.InstallImageIndex
+            UnattendUsername = if ($profile.UnattendUsername) { "$($profile.UnattendUsername)" } else { $null }
+            UnattendPassword = if ($profile.UnattendPassword) { "$($profile.UnattendPassword)" } else { $null }
+            OverwriteVhd = [bool]$profile.OverwriteVhd
+        }
+    }
+
+    $doc = [PSCustomObject]@{
+        SchemaVersion = [int]$script:VmProfileSchemaVersion
+        DefaultProfile = if ($Store.DefaultProfile) { "$($Store.DefaultProfile)" } else { $null }
+        Profiles = $profileList
+    }
+
+    $parent = Split-Path -Parent $Store.Path
+    EnsureDir $parent
+
+    $tmpPath = "$($Store.Path).tmp"
+    try {
+        $doc | ConvertTo-Json -Depth 16 | Out-File $tmpPath -Encoding UTF8 -Force
+        Move-Item -Path $tmpPath -Destination $Store.Path -Force
+        return $true
+    } catch {
+        if (Test-Path $tmpPath) { Remove-Item -Path $tmpPath -Force -EA SilentlyContinue }
+        Log "Could not write VM profile store: $($Store.Path)" "ERROR"
+        return $false
+    }
+}
+
+function InitializeHyperVGpuVmProfiles([string]$ProjectRoot=$PSScriptRoot) {
+    $script:VmProfileStores = @{
+        project = ImportHyperVGpuVmProfileStore -ProjectRoot $ProjectRoot
+    }
+}
+
+function GetHyperVGpuVmProfileInventory([string]$ProjectRoot=$PSScriptRoot) {
+    if (!$script:VmProfileStores.ContainsKey("project")) {
+        InitializeHyperVGpuVmProfiles -ProjectRoot $ProjectRoot
+    }
+
+    $inventory = @()
+    $store = GetHyperVGpuObjectValue $script:VmProfileStores "project"
+    if (!$store -or !$store.Profiles) { return $inventory }
+
+    foreach ($entry in @($store.Profiles.GetEnumerator() | Sort-Object Key)) {
+        $profile = $entry.Value
+        if (!$profile) { continue }
+
+        $isDefault = $false
+        if (![string]::IsNullOrWhiteSpace($store.DefaultProfile)) {
+            $isDefault = ((GetHyperVGpuProfileMapKey $store.DefaultProfile) -eq $entry.Key)
+        }
+
+        $inventory += [PSCustomObject]@{
+            Name = "$($profile.Name)"
+            IsDefault = [bool]$isDefault
+            VmName = "$($profile.VmName)"
+            Cpu = [int]$profile.Cpu
+            RamGB = [int]$profile.RamGB
+            StorageGB = [int]$profile.StorageGB
+            VhdPath = "$($profile.VhdPath)"
+            IsoPath = if ($profile.IsoPath) { "$($profile.IsoPath)" } else { $null }
+            EnableAutoInstall = [bool]$profile.EnableAutoInstall
+            InstallImageIndex = [int]$profile.InstallImageIndex
+            UnattendUsername = if ($profile.UnattendUsername) { "$($profile.UnattendUsername)" } else { $null }
+            UnattendPassword = if ($profile.UnattendPassword) { "$($profile.UnattendPassword)" } else { $null }
+            OverwriteVhd = [bool]$profile.OverwriteVhd
+            StorePath = "$($store.Path)"
+        }
+    }
+
+    return $inventory
+}
+
+function GetHyperVGpuVmProfile([string]$Name, [string]$ProjectRoot=$PSScriptRoot) {
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+
+    if (!$script:VmProfileStores.ContainsKey("project")) {
+        InitializeHyperVGpuVmProfiles -ProjectRoot $ProjectRoot
+    }
+    $profileKey = GetHyperVGpuProfileMapKey $Name
+
+    $store = $script:VmProfileStores["project"]
+    if (!$store -or !$store.Profiles -or !$store.Profiles.ContainsKey($profileKey)) { return $null }
+
+    $profile = $store.Profiles[$profileKey]
+    if (!$profile) { return $null }
+
+    return [PSCustomObject]@{
+        Name = "$($profile.Name)"
+        VmName = "$($profile.VmName)"
+        Cpu = [int]$profile.Cpu
+        RamGB = [int]$profile.RamGB
+        StorageGB = [int]$profile.StorageGB
+        VhdPath = "$($profile.VhdPath)"
+        IsoPath = if ($profile.IsoPath) { "$($profile.IsoPath)" } else { $null }
+        EnableAutoInstall = [bool]$profile.EnableAutoInstall
+        InstallImageIndex = [int]$profile.InstallImageIndex
+        UnattendUsername = if ($profile.UnattendUsername) { "$($profile.UnattendUsername)" } else { $null }
+        UnattendPassword = if ($profile.UnattendPassword) { "$($profile.UnattendPassword)" } else { $null }
+        OverwriteVhd = [bool]$profile.OverwriteVhd
+        StorePath = "$($store.Path)"
+    }
+
+    return $null
+}
+
+function SaveHyperVGpuVmProfile(
+    [string]$Name,
+    [string]$ProjectRoot=$PSScriptRoot,
+    [string]$VmName,
+    [int]$Cpu,
+    [int]$RamGB,
+    [int]$StorageGB,
+    [string]$VhdPath,
+    [string]$IsoPath,
+    [switch]$EnableAutoInstall,
+    [int]$InstallImageIndex=0,
+    [string]$UnattendUsername,
+    [string]$UnattendPassword,
+    [switch]$OverwriteVhd,
+    [switch]$SetDefault
+) {
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        Log "VM profile name is required." "ERROR"
+        return $null
+    }
+
+    if (!$script:VmProfileStores.ContainsKey("project")) {
+        InitializeHyperVGpuVmProfiles -ProjectRoot $ProjectRoot
+    }
+
+    $store = $script:VmProfileStores["project"]
+    if (!$store) {
+        Log "Could not access VM profile store." "ERROR"
+        return $null
+    }
+
+    $rawProfile = [PSCustomObject]@{
+        Name = $Name
+        VmName = if ($VmName) { $VmName } else { $Name }
+        Cpu = $Cpu
+        RamGB = $RamGB
+        StorageGB = $StorageGB
+        VhdPath = if ($VhdPath) { $VhdPath } else { $script:Paths.VHD }
+        IsoPath = if ($IsoPath) { $IsoPath } else { $null }
+        EnableAutoInstall = [bool]$EnableAutoInstall
+        InstallImageIndex = [int]$InstallImageIndex
+        UnattendUsername = if ($UnattendUsername) { $UnattendUsername } else { $null }
+        UnattendPassword = if ($UnattendPassword) { $UnattendPassword } else { $null }
+        OverwriteVhd = [bool]$OverwriteVhd
+    }
+
+    $profile = ConvertToHyperVGpuVmProfileObject $rawProfile
+    if (!$profile) {
+        Log "Invalid VM profile data. Name, VM name, CPU, RAM, and Storage are required." "ERROR"
+        return $null
+    }
+
+    $profileKey = GetHyperVGpuProfileMapKey $profile.Name
+    $store.Profiles[$profileKey] = $profile
+
+    if ($SetDefault) {
+        $store.DefaultProfile = $profile.Name
+    } elseif ([string]::IsNullOrWhiteSpace($store.DefaultProfile)) {
+        $store.DefaultProfile = $profile.Name
+    }
+
+    if (!(ExportHyperVGpuVmProfileStore $store)) {
+        return $null
+    }
+
+    return [PSCustomObject]@{
+        Name = "$($profile.Name)"
+        IsDefault = [bool]((GetHyperVGpuProfileMapKey $store.DefaultProfile) -eq $profileKey)
+        VmName = "$($profile.VmName)"
+        Cpu = [int]$profile.Cpu
+        RamGB = [int]$profile.RamGB
+        StorageGB = [int]$profile.StorageGB
+        VhdPath = "$($profile.VhdPath)"
+        IsoPath = if ($profile.IsoPath) { "$($profile.IsoPath)" } else { $null }
+        EnableAutoInstall = [bool]$profile.EnableAutoInstall
+        InstallImageIndex = [int]$profile.InstallImageIndex
+        UnattendUsername = if ($profile.UnattendUsername) { "$($profile.UnattendUsername)" } else { $null }
+        UnattendPassword = if ($profile.UnattendPassword) { "$($profile.UnattendPassword)" } else { $null }
+        OverwriteVhd = [bool]$profile.OverwriteVhd
+        StorePath = "$($store.Path)"
+    }
+}
+
+function SetHyperVGpuVmProfileDefault([string]$Name, [string]$ProjectRoot=$PSScriptRoot) {
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        Log "VM profile name is required." "ERROR"
+        return $false
+    }
+
+    if (!$script:VmProfileStores.ContainsKey("project")) {
+        InitializeHyperVGpuVmProfiles -ProjectRoot $ProjectRoot
+    }
+
+    $store = $script:VmProfileStores["project"]
+    if (!$store) { return $false }
+
+    $profileKey = GetHyperVGpuProfileMapKey $Name
+    if (!$store.Profiles.ContainsKey($profileKey)) {
+        Log "VM profile '$Name' does not exist." "ERROR"
+        return $false
+    }
+
+    $store.DefaultProfile = $store.Profiles[$profileKey].Name
+    if (!(ExportHyperVGpuVmProfileStore $store)) {
+        return $false
+    }
+
+    return $true
+}
+
+function RemoveHyperVGpuVmProfile([string]$Name, [string]$ProjectRoot=$PSScriptRoot) {
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        Log "VM profile name is required." "ERROR"
+        return $false
+    }
+
+    if (!$script:VmProfileStores.ContainsKey("project")) {
+        InitializeHyperVGpuVmProfiles -ProjectRoot $ProjectRoot
+    }
+
+    $store = $script:VmProfileStores["project"]
+    if (!$store) { return $false }
+
+    $profileKey = GetHyperVGpuProfileMapKey $Name
+    if (!$store.Profiles.ContainsKey($profileKey)) {
+        Log "VM profile '$Name' does not exist." "ERROR"
+        return $false
+    }
+
+    $removedName = "$($store.Profiles[$profileKey].Name)"
+    [void]$store.Profiles.Remove($profileKey)
+
+    if (![string]::IsNullOrWhiteSpace($store.DefaultProfile) -and ((GetHyperVGpuProfileMapKey $store.DefaultProfile) -eq $profileKey)) {
+        $next = @($store.Profiles.GetEnumerator() | Sort-Object Key | Select-Object -First 1)
+        $store.DefaultProfile = if ($next) { "$($next[0].Value.Name)" } else { $null }
+    }
+
+    if (!(ExportHyperVGpuVmProfileStore $store)) {
+        return $false
+    }
+
+    Log "VM profile '$removedName' removed." "SUCCESS"
+    return $true
+}
 
 $script:UI = @{
     Accent = "Cyan"
@@ -188,7 +639,27 @@ function Input($P, $V={$true}, $D=$null) {
         $label = if ($D) { "  $P [$D]" } else { "  $P" }
         $i = Read-Host $label
         if (!$i -and $D) { return $D }
-        if (& $V $i) { return $i }
+
+        $isValid = $false
+
+        try {
+            $result = & $V $i
+            if ($result -is [System.Array]) { $result = $result | Select-Object -Last 1 }
+            $isValid = [bool]$result
+        } catch {
+            $isValid = $false
+        }
+
+        if (!$isValid) {
+            try {
+                $pipelineResult = $i | ForEach-Object $V | Select-Object -Last 1
+                $isValid = [bool]$pipelineResult
+            } catch {
+                $isValid = $false
+            }
+        }
+
+        if ($isValid) { return $i }
         Log "Invalid input for: $P" "WARN"
     } while ($true)
 }

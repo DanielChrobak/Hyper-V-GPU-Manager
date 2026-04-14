@@ -9,6 +9,7 @@ A comprehensive PowerShell tool for GPU partitioning (GPU-PV) in Hyper-V virtual
 - **Driver Injection** - Automatically inject host partition-device drivers into VM disks using package-aware discovery with INF fallback
 - **Unattended Install Media** - Create setup media with injected `autounattend.xml`
 - **Non-Interactive CLI Commands** - Run repeatable operations in scripts and pipelines (`-Command create-vm`, `set-gpu`, etc.)
+- **VM Profile Templates** - Save reusable VM presets (VM name, CPU/RAM/storage, ISO, unattended defaults) and pick them from Create VM
 - **Reusable API Layer** - Automation and future GUI clients call a stable API surface instead of menu-only flows
 - **VM Management** - View, configure, and delete VMs with GPU assignments
 - **Error Handling** - Clear blocking errors with pauses, plus non-blocking warnings for partial driver resolution/copy scenarios
@@ -90,6 +91,13 @@ Available command values:
 - `list-vms`
 - `list-gpus`
 - `help`
+
+### VM Profile Templates
+
+VM profile templates are managed from the interactive menu (`VM Profiles`) and appear as selectable entries in `Create VM`.
+
+- **Profile store:** `<project root>\.hyperv-gpu-manager.vm-profiles.json`
+- **Create VM order:** built-in presets first, then saved VM profile templates
 
 ---
 
@@ -481,6 +489,7 @@ Displays all physical GPUs with detailed information and partitioning capability
 - **VHD Storage:** `C:\ProgramData\Microsoft\Windows\Virtual Hard Disks\`
 - **ISO Storage:** `C:\ProgramData\HyperV-ISOs\` (unattended installation ISOs)
 - **Temporary Mounts:** `C:\ProgramData\HyperV-Mounts\VMMount_<guid>` (`<guid>` is a 32-character GUID string without hyphens)
+- **VM Profile Store:** `<project root>\.hyperv-gpu-manager.vm-profiles.json`
 - **Host Driver Store (inside mounted guest):** `Windows\System32\HostDriverStore\FileRepository\`
 - **Driver Manifest (inside mounted guest):** `Windows\System32\HostDriverStore\gpu-driver-manifest.json`
 - **GPU Registry:** `HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}`
@@ -580,12 +589,30 @@ These settings are:
 ## Advanced Usage
 
 ### Customizing VM Presets
-Edit the `$script:Presets` block in `src\Core\Config.Helpers.ps1` to add or modify presets:
+Use the interactive `VM Profiles` menu to create/edit VM template entries.
+
 ```powershell
-$script:Presets = @(
-   @{L="Your Custom | 16CPU, 64GB, 1TB"; N="Custom-VM"; C=16; R=64; S=1024},
-    # ... existing presets
-)
+# Open interactive menu and manage VM templates
+powershell.exe -ExecutionPolicy Bypass -File "HyperV-GPU-Virtualization-Manager.ps1" -Command interactive
+```
+
+To add/modify entries directly, edit the VM profile JSON and keep this shape per profile:
+
+```json
+{
+   "Name": "workstation",
+   "VmName": "Workstation-VM",
+   "Cpu": 12,
+   "RamGB": 48,
+   "StorageGB": 1024,
+   "VhdPath": "C:\\ProgramData\\Microsoft\\Windows\\Virtual Hard Disks\\",
+   "IsoPath": "C:\\ISOs\\Win11.iso",
+   "EnableAutoInstall": true,
+   "InstallImageIndex": 0,
+   "UnattendUsername": "User",
+   "UnattendPassword": "",
+   "OverwriteVhd": false
+}
 ```
 
 ### Custom Unattended Installation XML
