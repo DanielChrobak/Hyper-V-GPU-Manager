@@ -65,7 +65,11 @@ function Get-HyperVGpuVmSummary {
         $storage = "0GB"
         try {
             $v = Get-VHD -VMId $_.VMId -EA SilentlyContinue
-            if ($v) { $storage = FormatCapacityFromBytes $v.Size }
+            if ($v) {
+                $totalBytes = 0
+                foreach ($disk in @($v)) { $totalBytes += [long]$disk.Size }
+                $storage = FormatCapacityFromBytes $totalBytes
+            }
         } catch {}
 
         $mem = if ($_.MemoryAssigned -gt 0) { $_.MemoryAssigned } else { $_.MemoryStartup }

@@ -31,7 +31,11 @@ function SelectVM($Title="SELECT VM", $State="Any") {
         $storage = "0GB"
         try {
             $vhd = Get-VHD -VMId $_.VMId -EA SilentlyContinue
-            if ($vhd) { $storage = FormatCapacityFromBytes $vhd.Size }
+            if ($vhd) {
+                $totalBytes = 0
+                foreach ($disk in @($vhd)) { $totalBytes += [long]$disk.Size }
+                $storage = FormatCapacityFromBytes $totalBytes
+            }
         } catch {}
         $ga = if ($gpuAdapterMap.ContainsKey($_.Name)) { @($gpuAdapterMap[$_.Name]) } else { @() }
         $si = switch ($_.State) { "Running" { "[*]" } "Off" { "[ ]" } default { "[~]" } }
@@ -84,5 +88,47 @@ function EnsureOff($Name) {
     $v = Get-VM $Name -EA SilentlyContinue
     if (!$v) { Log "VM not found: $Name" "ERROR"; return $false }
     return ($v.State -eq "Off") -or (StopVM $Name $v)
+}
+
+function Select-VMSystemDisk {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$VMName,
+        [switch]$NonInteractive
+    )
+
+    $disks = @(Get-VMHardDiskDrive -VMName $VMName -ErrorAction SilentlyContinue)
+    if ($disks.Count -eq 0) {
+        return $null
+    } elseif ($disks.Count -eq 1) {
+        return $disks[0].Path
+    }
+
+    if ($NonInteractive) {
+        $sysDisk = $disks | Sort-Object ControllerType, ControllerNumber, ControllerLocation | Where-Object { 
+            $_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0 
+        } | Select-Object -First 1
+
+        if ($sysDisk) {
+            return $sysDisk.Path
+        } else {
+            Log "Could not unambiguously determine system disk for VM $VMName. Using first available disk." "WARN"
+            $first = $disks | Sort-Object ControllerType, ControllerNumber, ControllerLocation | Select-Object -First 1
+            return $first.Path
+        }
+    } else {
+        $items = @()
+        foreach ($disk in $disks) {
+            $items += "[$($disk.ControllerType):$($disk.ControllerNumber):$($disk.ControllerLocation)] $($disk.Path)"
+        }
+        $items += "< Cancel >"
+        
+        $sel = Menu -Items $items -Title "SELECT SYSTEM DISK FOR $VMName"
+        if ($null -eq $sel -or $sel -eq ($items.Count - 1)) {
+            return $null
+        }
+        
+        return $disks[$sel].Path
+    }
 }
 #endregion

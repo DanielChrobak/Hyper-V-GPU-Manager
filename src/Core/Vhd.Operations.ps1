@@ -4,8 +4,9 @@ function SecureDir($P) {
     New-Item $P -ItemType Directory -Force -EA Stop | Out-Null
     $acl = Get-Acl $P
     $acl.SetAccessRuleProtection($true, $false)
-    @("NT AUTHORITY\SYSTEM", "BUILTIN\Administrators") | ForEach-Object {
-        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($_, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")))
+    @("S-1-5-18", "S-1-5-32-544") | ForEach-Object {
+        $sid = [System.Security.Principal.SecurityIdentifier]$_
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")))
     }
     Set-Acl $P $acl
 }

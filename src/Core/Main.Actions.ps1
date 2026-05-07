@@ -520,19 +520,27 @@ function RemoveGPU($VMName=$null, $GPUPath=$null, [switch]$All, [switch]$CleanDr
         Write-Host ""; return $true
     }
 
-    $vhd = (Get-VMHardDiskDrive $VMName -EA SilentlyContinue).Path
+    $mount = $null
+    $vhd = $null
+    foreach ($disk in @(Get-VMHardDiskDrive -VMName $VMName -EA SilentlyContinue)) {
+        if (!$disk.Path) { continue }
+        try {
+            Write-Host ""; Spin "Mounting VM disk ($($disk.Path | Split-Path -Leaf)) to clean drivers..." 2
+            $mount = MountVHD $disk.Path
+            $vhd = $disk.Path
+            break
+        } catch {}
+    }
+
     if (!$vhd) {
-        Log "No VHD found - skipping driver cleanup" "WARN"
+        Log "No Windows VHD found - skipping driver cleanup" "WARN"
         Write-Host ""; Box "GPU REMOVAL COMPLETE" "-"
         Log "Selected GPU partition(s) removed" "SUCCESS"
         if ($mmioReset) { Log "MMIO settings reset" "SUCCESS" } else { Log "MMIO settings preserved for remaining GPU partition(s)" "INFO" }
         Write-Host ""; return $true
     }
 
-    $mount = $null
     try {
-        Write-Host ""; Spin "Mounting VM disk to clean drivers..." 2
-        $mount = MountVHD $vhd
 
         if ($gpuList) {
             Write-Host ""; Log "Removing system driver files..." "INFO"
@@ -815,10 +823,22 @@ function InstallDrivers($VMName=$null, $GPUPath=$null, [switch]$All, [switch]$Sk
 
     $skipExisting = if ($NonInteractive) { $SkipExisting.IsPresent } else { Confirm "Skip unchanged files that already exist in the VM disk? (uses hash comparison)" }
 
-    $vhd = (Get-VMHardDiskDrive $VMName -EA SilentlyContinue).Path
-    if (!$vhd) { Log "No VHD found" "ERROR"; Write-Host ""; return $false }
     if (!(EnsureOff $VMName)) { return $false }
+
     $mount = $null
+    $vhd = $null
+    foreach ($disk in @(Get-VMHardDiskDrive -VMName $VMName -EA SilentlyContinue)) {
+        if (!$disk.Path) { continue }
+        try {
+            Write-Host ""; Spin "Mounting VM disk ($($disk.Path | Split-Path -Leaf))..." 2
+            $mount = MountVHD $disk.Path
+            $vhd = $disk.Path
+            break
+        } catch {}
+    }
+
+    if (!$vhd) { Log "No Windows VHD found" "ERROR"; Write-Host ""; return $false }
+
     try {
         $folderMap = @{}
         $fileMap = @{}
@@ -854,7 +874,6 @@ function InstallDrivers($VMName=$null, $GPUPath=$null, [switch]$All, [switch]$Sk
         $drv = @{Folders=@($folderMap.Values); Files=@($fileMap.Values)}
         if ((!$drv.Folders) -and (!$drv.Files)) { Log "No driver files were resolved for the selected partition device(s)" "ERROR"; Write-Host ""; return $false }
 
-        $mount = MountVHD $vhd
         Spin "Preparing destination..." 1
         $store = "$($mount.Path)\Windows\System32\HostDriverStore\FileRepository"
         EnsureDir $store
@@ -987,7 +1006,11 @@ function ShowVMs {
         $storage = "0GB"
         try {
             $v = Get-VHD -VMId $_.VMId -EA SilentlyContinue
-            if ($v) { $storage = FormatCapacityFromBytes $v.Size }
+            if ($v) {
+                $totalBytes = 0
+                foreach ($disk in @($v)) { $totalBytes += [long]$disk.Size }
+                $storage = FormatCapacityFromBytes $totalBytes
+            }
         } catch {}
         $mem = if ($_.MemoryAssigned -gt 0) { $_.MemoryAssigned } else { $_.MemoryStartup }
         $ram = FormatCapacityFromBytes $mem
@@ -1044,7 +1067,9 @@ function DeleteVM($VMName=$null, [switch]$DeleteFiles, [switch]$Force, [switch]$
     $vm = Get-VM $VMName -EA SilentlyContinue
     if (!$vm) { Log "VM not found: $VMName" "ERROR"; Write-Host ""; return $false }
     Box "DELETE VM: $VMName"; Log "VM: $VMName" "INFO"; Log "State: $($vm.State)" "INFO"
-    $vhd = (Get-VMHardDiskDrive $VMName -EA SilentlyContinue).Path
+    $vhdPaths = @()
+    $drives = Get-VMHardDiskDrive -VMName $VMName -EA SilentlyContinue
+    if ($drives) { $vhdPaths = @($drives | Where-Object { $_.Path } | Select-Object -ExpandProperty Path) }
     $dvd = Get-VMDvdDrive $VMName -EA SilentlyContinue
     $isoPath = if ($dvd) { $dvd.Path } else { $null }
     $autoISO = $null
@@ -1053,7 +1078,7 @@ function DeleteVM($VMName=$null, [switch]$DeleteFiles, [switch]$Force, [switch]$
         if ($dir -eq $script:Paths.ISO) { $autoISO = $isoPath; Log "Auto-install ISO: $autoISO" "INFO" }
         else { Log "External ISO: $isoPath (will not be deleted)" "INFO" }
     }
-    if ($vhd) { Log "VHD: $vhd" "INFO" }
+    foreach ($vhd in $vhdPaths) { Log "VHD: $vhd" "INFO" }
     Write-Host "`n  WARNING: This will permanently delete the VM!`n" -ForegroundColor Yellow
     if ($NonInteractive) {
         if (!$Force) {
@@ -1067,7 +1092,7 @@ function DeleteVM($VMName=$null, [switch]$DeleteFiles, [switch]$Force, [switch]$
     }
 
     $delFiles = if ($NonInteractive) { $DeleteFiles.IsPresent } else { $false }
-    if (!$NonInteractive -and ($vhd -or $autoISO)) { Write-Host ""; if (Confirm "Also delete associated files?") { $delFiles = $true } }
+    if (!$NonInteractive -and ($vhdPaths.Count -gt 0 -or $autoISO)) { Write-Host ""; if (Confirm "Also delete associated files?") { $delFiles = $true } }
     Write-Host ""
     if ($vm.State -ne "Off") { if (!(EnsureOff $VMName)) { Log "Failed to stop VM" "ERROR"; Write-Host ""; return $false } }
     $hasGPU = Get-VMGpuPartitionAdapter $VMName -EA SilentlyContinue
@@ -1076,12 +1101,17 @@ function DeleteVM($VMName=$null, [switch]$DeleteFiles, [switch]$Force, [switch]$
     if (!(Try-Op { Remove-VM $VMName -Force -EA Stop; Log "VM removed successfully" "SUCCESS" } "Remove VM").OK) { Write-Host ""; return $false }
     if ($delFiles) {
         Write-Host ""
-        if ($vhd -and (Test-Path $vhd)) { Spin "Deleting VHD..." 2; Try-Op { Remove-Item $vhd -Force -EA Stop; Log "VHD deleted: $vhd" "SUCCESS" } "Delete VHD" | Out-Null }
+        foreach ($vhd in $vhdPaths) {
+            if (Test-Path $vhd) { Spin "Deleting VHD..." 2; Try-Op { Remove-Item $vhd -Force -EA Stop; Log "VHD deleted: $vhd" "SUCCESS" } "Delete VHD" | Out-Null }
+        }
         if ($autoISO -and (Test-Path $autoISO)) { Spin "Deleting auto-install ISO..." 1; Try-Op { Remove-Item $autoISO -Force -EA Stop; Log "ISO deleted: $autoISO" "SUCCESS" } "Delete ISO" | Out-Null }
     }
     Write-Host ""; Box "VM DELETED SUCCESSFULLY" "-"; Log "VM '$VMName' has been removed" "SUCCESS"
     if ($delFiles) { Log "Associated files deleted" "SUCCESS" }
-    else { if ($vhd) { Log "VHD preserved: $vhd" "INFO" }; if ($autoISO) { Log "ISO preserved: $autoISO" "INFO" } }
+    else { 
+        foreach ($vhd in $vhdPaths) { Log "VHD preserved: $vhd" "INFO" }
+        if ($autoISO) { Log "ISO preserved: $autoISO" "INFO" } 
+    }
     Write-Host ""; return $true
 }
 #endregion
